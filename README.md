@@ -307,8 +307,7 @@ neural-networks-and-deep-learning/
 │   ├── conftest.py             # Pytest fixtures and configuration
 │   ├── test_network.py         # Neural network unit tests
 │   ├── test_model_persistence.py  # Model persistence tests
-│   ├── test_api.py             # API endpoint tests
-│   └── test_socketio.py        # WebSocket/SocketIO tests
+│   └── test_api.py             # API endpoint tests
 ├── docs/
 │   ├── API_DOCUMENTATION.md           # Complete REST API docs
 │   ├── WEBSOCKET_API_DOCUMENTATION.md # WebSocket events & Angular guide
@@ -386,10 +385,6 @@ This generates an HTML coverage report in `htmlcov/index.html`.
   - Training endpoints
   - Example prediction endpoints
 
-- **test_socketio.py** - WebSocket event tests
-  - Real-time training updates
-  - Training completion events
-  - Event data format validation
 
 ### Test Markers
 
@@ -407,7 +402,6 @@ The test suite uses pytest fixtures defined in `tests/conftest.py`:
 - `simple_network` - Small 3-layer network for quick tests
 - `mnist_network` - Full MNIST architecture
 - `flask_client` - Flask test client
-- `socketio_client` - SocketIO test client
 - `temp_model_dir` - Temporary directory for model storage
 
 Example test:

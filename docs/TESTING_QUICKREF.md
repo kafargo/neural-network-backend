@@ -26,9 +26,8 @@ python run_tests.py help
 - `tests/test_network.py` - 16 neural network unit tests
 - `tests/test_model_persistence.py` - 13 model save/load tests  
 - `tests/test_api.py` - 25 API endpoint tests
-- `tests/test_socketio.py` - 4 WebSocket event tests
 
-**Total: 58 tests**
+**Total: 54 tests**
 
 ## Run Specific Tests
 
@@ -57,7 +56,6 @@ From `tests/conftest.py`:
 - `sample_training_data` - 10 training samples
 - `sample_test_data` - 5 test samples
 - `flask_client` - Flask test client
-- `socketio_client` - SocketIO test client
 - `temp_model_dir` - Temporary directory
 - `mnist_data` - Full MNIST dataset
 

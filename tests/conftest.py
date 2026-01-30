@@ -67,16 +67,6 @@ def flask_client():
     training_jobs.clear()
 
 
-@pytest.fixture
-def socketio_client():
-    """Create a SocketIO test client."""
-    client = socketio.test_client(app)
-    yield client
-    client.disconnect()
-    # Cleanup after test
-    active_networks.clear()
-    training_jobs.clear()
-
 
 @pytest.fixture
 def temp_model_dir(tmp_path):
