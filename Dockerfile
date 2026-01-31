@@ -17,6 +17,7 @@ RUN mkdir -p models
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     FLASK_ENV=production \
+    LOG_LEVEL=WARNING \
     PORT=8000
 
 # Expose port
@@ -26,5 +27,7 @@ EXPOSE ${PORT}
 # -k gevent: Use gevent async worker (required for WebSockets)
 # -w 1: Single worker (gevent handles concurrency internally)
 # --timeout 300: 5 minute timeout for long-running training tasks
-# --log-level info: Better logging for debugging
-CMD ["sh", "-c", "gunicorn -k gevent -w 1 --timeout 300 --log-level info -b 0.0.0.0:${PORT:-8000} src.api_server:app"]
+# --log-level warning: Reduce gunicorn logging noise in production
+# --access-logfile -: Send access logs to stdout (filtered by log level)
+# --error-logfile -: Send error logs to stderr
+CMD ["sh", "-c", "gunicorn -k gevent -w 1 --timeout 300 --log-level warning --access-logfile - --error-logfile - -b 0.0.0.0:${PORT:-8000} src.api_server:app"]

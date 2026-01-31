@@ -46,24 +46,68 @@ from src.model_persistence import (
     delete_old_networks
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging with environment-based log levels
+def configure_logging() -> None:
+    """
+    Configure logging based on environment variables.
+
+    In production (Railway), sets higher log levels to reduce noise.
+    In development, shows more detailed logs for debugging.
+
+    Environment variables:
+    - LOG_LEVEL: Overall log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    - FLASK_ENV: Flask environment (production, development)
+    """
+    # Get log level from environment, default to INFO
+    log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
+
+    # Check if we're in production
+    is_production = os.getenv('FLASK_ENV') == 'production'
+
+    # Configure root logger
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+    # In production, reduce noise from third-party libraries
+    if is_production:
+        # Suppress noisy Socket.IO/Engine.IO logs
+        logging.getLogger('socketio').setLevel(logging.WARNING)
+        logging.getLogger('engineio').setLevel(logging.WARNING)
+        logging.getLogger('engineio.server').setLevel(logging.WARNING)
+        logging.getLogger('socketio.server').setLevel(logging.WARNING)
+
+        # Suppress werkzeug (Flask's development server) logs
+        logging.getLogger('werkzeug').setLevel(logging.WARNING)
+
+        # Keep our application logs at INFO level
+        logging.getLogger('src').setLevel(logging.INFO)
+    else:
+        # Development: show more details for debugging
+        logging.getLogger('socketio').setLevel(logging.INFO)
+        logging.getLogger('engineio').setLevel(logging.INFO)
+
+
+# Initialize logging configuration
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static')
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+# Determine if we're in production for SocketIO config
+is_production = os.getenv('FLASK_ENV') == 'production'
+
 # Initialize SocketIO for WebSocket support
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
     async_mode='gevent',
-    logger=True,
-    engineio_logger=True,
+    logger=not is_production,  # Disable SocketIO logger in production
+    engineio_logger=not is_production,  # Disable Engine.IO logger in production
     ping_timeout=60,   # Seconds before considering connection dead
     ping_interval=25   # Send ping every 25 seconds to keep connection alive
 )
