@@ -44,7 +44,7 @@ class TestNetworkCreation:
         """Test creating a network with default architecture."""
         response = flask_client.post('/api/networks',
                                     json={})
-        assert response.status_code == 200
+        assert response.status_code == 201
         data = json.loads(response.data)
         assert 'network_id' in data
         assert 'architecture' in data
@@ -55,7 +55,7 @@ class TestNetworkCreation:
         custom_arch = [784, 128, 64, 10]
         response = flask_client.post('/api/networks',
                                     json={'layer_sizes': custom_arch})
-        assert response.status_code == 200
+        assert response.status_code == 201
         data = json.loads(response.data)
         assert data['architecture'] == custom_arch
 
@@ -170,7 +170,7 @@ class TestTrainingEndpoints:
             json={'epochs': 1, 'mini_batch_size': 10, 'learning_rate': 0.5}
         )
 
-        assert train_response.status_code == 200
+        assert train_response.status_code == 202
         data = json.loads(train_response.data)
         assert 'job_id' in data
         assert 'network_id' in data
@@ -196,7 +196,7 @@ class TestTrainingEndpoints:
             json={}
         )
 
-        assert train_response.status_code == 200
+        assert train_response.status_code == 202
 
     def test_get_training_status(self, flask_client):
         """Test getting training job status."""
@@ -302,7 +302,7 @@ class TestTrainingFlow:
         # 1. Create network
         create_response = flask_client.post('/api/networks',
                                            json={'layer_sizes': [784, 30, 10]})
-        assert create_response.status_code == 200
+        assert create_response.status_code == 201
         network_id = json.loads(create_response.data)['network_id']
 
         # 2. Verify it's in the list
@@ -315,7 +315,7 @@ class TestTrainingFlow:
             f'/api/networks/{network_id}/train',
             json={'epochs': 1, 'mini_batch_size': 10, 'learning_rate': 0.5}
         )
-        assert train_response.status_code == 200
+        assert train_response.status_code == 202
         job_id = json.loads(train_response.data)['job_id']
 
         # 4. Check training status

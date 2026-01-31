@@ -1,112 +1,240 @@
 """
 api_server.py
-~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~
 
-A Flask-based API server that serves as the backend for the neural network
-application. It enables frontend applications to create networks, train them,
-and retrieve results.
+Flask-based REST API server with WebSocket support for neural network training.
+
+This module provides endpoints for:
+- Creating and managing neural networks
+- Training networks with real-time progress updates via WebSockets
+- Testing networks with MNIST digit recognition
+- Persisting networks to/from SQLite database
+
+The server uses:
+- Flask for REST API endpoints
+- Flask-SocketIO for WebSocket communication
+- Eventlet for async background training tasks
+- SQLite for network persistence
 """
 
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-from flask_socketio import SocketIO, emit
 import os
+import sys
 import uuid
 import base64
+import logging
 from io import BytesIO
+from typing import Dict, Any, Tuple
+
 import eventlet
+import numpy as np
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from flask_socketio import SocketIO
+
 # Set matplotlib to use non-interactive backend before importing pyplot
 import matplotlib
-matplotlib.use('Agg')  # Use the Agg backend which doesn't require a display
+matplotlib.use('Agg')  # Use Agg backend which doesn't require a display
 import matplotlib.pyplot as plt
-import numpy as np
 
 # Import our existing network code from the src package
 from src import network
 from src import mnist_loader
 from src.model_persistence import (
     save_network,
-    load_network,
     list_saved_networks,
     delete_network
 )
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Initialize Flask app
 app = Flask(__name__, static_folder='static')
-CORS(app, resources={r"/*": {"origins": "*"}})  # Enable CORS for all routes and all origins
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Initialize SocketIO for WebSocket support
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
     async_mode='eventlet',
     logger=True,
     engineio_logger=True,
-    ping_timeout=60,        # 60 seconds before considering connection dead
-    ping_interval=25        # Send ping every 25 seconds to keep connection alive
+    ping_timeout=60,   # Seconds before considering connection dead
+    ping_interval=25   # Send ping every 25 seconds to keep connection alive
 )
 
-# Store active networks in memory
-active_networks = {}
+# Global state storage
+# Store active networks in memory: {network_id: {network, architecture, ...}}
+active_networks: Dict[str, Dict[str, Any]] = {}
 
-# Store training jobs
-training_jobs = {}
+# Store training jobs: {job_id: {network_id, status, progress, ...}}
+training_jobs: Dict[str, Dict[str, Any]] = {}
 
-# Load MNIST data once at startup
-print("Loading MNIST data...")
-try:
-    training_data, validation_data, test_data = mnist_loader.load_data_wrapper()
-    print("Data loaded successfully!")
-except Exception as e:
-    print(f"Error loading data: {e}")
-    raise
+# MNIST dataset storage (loaded once at startup)
+training_data = None
+validation_data = None
+test_data = None
+
+
+def load_mnist_data() -> None:
+    """
+    Load MNIST dataset into global variables.
+
+    This function loads the dataset once at startup to avoid repeated
+    loading for each training operation.
+
+    Raises:
+        Exception: If data loading fails
+    """
+    global training_data, validation_data, test_data
+
+    logger.info("Loading MNIST data...")
+    try:
+        training_data, validation_data, test_data = (
+            mnist_loader.load_data_wrapper()
+        )
+        logger.info(
+            f"Data loaded successfully! "
+            f"Training: {len(training_data)}, "
+            f"Validation: {len(validation_data)}, "
+            f"Test: {len(test_data)}"
+        )
+    except Exception as e:
+        logger.exception(f"Error loading MNIST data: {e}")
+        raise
+
+
+# Load data at module initialization
+load_mnist_data()
 
 @app.route('/api/status', methods=['GET'])
-def get_status():
-    """Basic endpoint to check if the API is running"""
+def get_status() -> Tuple[Dict[str, Any], int]:
+    """
+    Get server status and statistics.
+
+    Returns:
+        tuple: JSON response with status information and HTTP status code
+
+    Response:
+        {
+            'status': 'online',
+            'active_networks': int,
+            'training_jobs': int
+        }
+    """
     return jsonify({
         'status': 'online',
         'active_networks': len(active_networks),
         'training_jobs': len(training_jobs)
-    })
+    }), 200
 
 @app.route('/api/networks', methods=['POST'])
-def create_network():
-    """Create a new neural network with the specified architecture"""
-    data = request.get_json()
-    
+def create_network() -> Tuple[Dict[str, Any], int]:
+    """
+    Create a new neural network with the specified architecture.
+
+    Request Body:
+        {
+            'layer_sizes': [784, 30, 10]  # Optional, defaults to [784, 30, 10]
+        }
+
+    Returns:
+        tuple: JSON response with network details and HTTP status code
+
+    Response:
+        {
+            'network_id': str,
+            'architecture': list,
+            'status': 'created'
+        }
+    """
+    data = request.get_json() or {}
+
     # Get layer sizes from request, default to [784, 30, 10] if not specified
     layer_sizes = data.get('layer_sizes', [784, 30, 10])
     
+    # Validate architecture
+    if not isinstance(layer_sizes, list) or len(layer_sizes) < 2:
+        logger.warning(f"Invalid architecture requested: {layer_sizes}")
+        return jsonify({
+            'error': 'Invalid architecture. Must have at least 2 layers.'
+        }), 400
+
     # Create a unique ID for this network
     network_id = str(uuid.uuid4())
     
-    # Create the network with specified architecture
-    net = network.Network(layer_sizes)
-    
-    # Store in our dictionary
-    active_networks[network_id] = {
-        'network': net,
-        'architecture': layer_sizes,
-        'trained': False,
-        'accuracy': None
-    }
-    
-    return jsonify({
-        'network_id': network_id,
-        'architecture': layer_sizes,
-        'status': 'created'
-    })
+    try:
+        # Create the network with specified architecture
+        net = network.Network(layer_sizes)
+
+        # Store in our dictionary
+        active_networks[network_id] = {
+            'network': net,
+            'architecture': layer_sizes,
+            'trained': False,
+            'accuracy': None
+        }
+
+        logger.info(
+            f"Created network {network_id} with architecture {layer_sizes}"
+        )
+
+        return jsonify({
+            'network_id': network_id,
+            'architecture': layer_sizes,
+            'status': 'created'
+        }), 201
+
+    except Exception as e:
+        logger.exception(f"Error creating network: {e}")
+        return jsonify({'error': f'Failed to create network: {str(e)}'}), 500
 
 @app.route('/api/networks/<network_id>/train', methods=['POST'])
-def train_network(network_id):
-    """Start asynchronous training for the specified network"""
+def train_network(network_id: str) -> Tuple[Dict[str, Any], int]:
+    """
+    Start asynchronous training for the specified network.
+
+    Args:
+        network_id: UUID of the network to train
+
+    Request Body:
+        {
+            'epochs': 5,              # Optional, default: 5
+            'mini_batch_size': 10,    # Optional, default: 10
+            'learning_rate': 3.0      # Optional, default: 3.0
+        }
+
+    Returns:
+        tuple: JSON response with job details and HTTP status code
+
+    Response:
+        {
+            'job_id': str,
+            'network_id': str,
+            'status': 'training_started'
+        }
+    """
     if network_id not in active_networks:
+        logger.warning(f"Training requested for non-existent network: {network_id}")
         return jsonify({'error': 'Network not found'}), 404
         
-    data = request.get_json()
+    data = request.get_json() or {}
     epochs = data.get('epochs', 5)
     mini_batch_size = data.get('mini_batch_size', 10)
     learning_rate = data.get('learning_rate', 3.0)
     
+    # Validate parameters
+    if not isinstance(epochs, int) or epochs < 1:
+        return jsonify({'error': 'epochs must be a positive integer'}), 400
+    if not isinstance(mini_batch_size, int) or mini_batch_size < 1:
+        return jsonify({'error': 'mini_batch_size must be a positive integer'}), 400
+    if not isinstance(learning_rate, (int, float)) or learning_rate <= 0:
+        return jsonify({'error': 'learning_rate must be a positive number'}), 400
+
     # Create a job ID for this training task
     job_id = str(uuid.uuid4())
     
@@ -118,6 +246,12 @@ def train_network(network_id):
         'epochs': epochs
     }
     
+    logger.info(
+        f"Starting training job {job_id} for network {network_id}: "
+        f"epochs={epochs}, batch_size={mini_batch_size}, "
+        f"learning_rate={learning_rate}"
+    )
+
     # Start training in a background task (compatible with eventlet)
     socketio.start_background_task(
         train_network_task,
@@ -128,19 +262,44 @@ def train_network(network_id):
         'job_id': job_id,
         'network_id': network_id,
         'status': 'training_started'
-    })
+    }), 202
 
-def train_network_task(network_id, job_id, epochs, mini_batch_size, learning_rate):
-    """Background task to train the network"""
+def train_network_task(
+    network_id: str,
+    job_id: str,
+    epochs: int,
+    mini_batch_size: int,
+    learning_rate: float
+) -> None:
+    """
+    Background task to train a neural network.
+
+    This function runs in a separate eventlet greenthread and sends progress
+    updates via WebSocket as training progresses.
+
+    Args:
+        network_id: UUID of the network to train
+        job_id: UUID of the training job
+        epochs: Number of training epochs
+        mini_batch_size: Size of mini-batches for SGD
+        learning_rate: Learning rate for gradient descent
+    """
     net = active_networks[network_id]['network']
     
-    def epoch_callback(data):
-        """Callback function for each epoch to send updates via websocket"""
+    def epoch_callback(data: Dict[str, Any]) -> None:
+        """
+        Callback function for each epoch to send updates via WebSocket.
+
+        Args:
+            data: Dictionary containing epoch information
+        """
         # Update the job status
         training_jobs[job_id]['status'] = 'training'
-        training_jobs[job_id]['progress'] = (data['epoch'] / data['total_epochs']) * 100
-        
-        # Prepare update data for websocket emission
+        training_jobs[job_id]['progress'] = (
+            (data['epoch'] / data['total_epochs']) * 100
+        )
+
+        # Prepare update data for WebSocket emission
         update_data = {
             'job_id': job_id,
             'network_id': network_id,
@@ -153,17 +312,31 @@ def train_network_task(network_id, job_id, epochs, mini_batch_size, learning_rat
             'total': data.get('total')
         }
         
-        # Emit the progress update through websocket
+        logger.debug(
+            f"Training progress - Job {job_id}: "
+            f"Epoch {data['epoch']}/{data['total_epochs']}, "
+            f"Accuracy: {data['accuracy']:.2%}"
+        )
+
+        # Emit the progress update through WebSocket
         socketio.emit('training_update', update_data)
         # Yield control to eventlet to send the message immediately
         eventlet.sleep(0)
 
     try:
+        logger.info(f"Starting training for job {job_id}")
+
         # Train the network with the callback function
-        net.SGD(training_data, epochs, mini_batch_size, learning_rate, 
-                test_data=test_data, callback=epoch_callback)
-        
-        # Calculate accuracy
+        net.SGD(
+            training_data,
+            epochs,
+            mini_batch_size,
+            learning_rate,
+            test_data=test_data,
+            callback=epoch_callback
+        )
+
+        # Calculate final accuracy
         accuracy = net.evaluate(test_data) / len(test_data)
         
         # Update network status
@@ -178,6 +351,11 @@ def train_network_task(network_id, job_id, epochs, mini_batch_size, learning_rat
         # Save the trained network with metadata
         save_network(net, network_id, trained=True, accuracy=accuracy)
 
+        logger.info(
+            f"Training completed for job {job_id}: "
+            f"Final accuracy: {accuracy:.2%}"
+        )
+
         # Emit completion event via WebSocket
         socketio.emit('training_complete', {
             'job_id': job_id,
@@ -190,6 +368,8 @@ def train_network_task(network_id, job_id, epochs, mini_batch_size, learning_rat
         eventlet.sleep(0)
 
     except Exception as e:
+        logger.exception(f"Training failed for job {job_id}: {e}")
+
         # Update job status on error
         training_jobs[job_id]['status'] = 'failed'
         training_jobs[job_id]['error'] = str(e)
@@ -205,16 +385,54 @@ def train_network_task(network_id, job_id, epochs, mini_batch_size, learning_rat
         eventlet.sleep(0)
 
 @app.route('/api/training/<job_id>', methods=['GET'])
-def get_training_status(job_id):
-    """Get the status of a training job"""
+def get_training_status(job_id: str) -> Tuple[Dict[str, Any], int]:
+    """
+    Get the status of a training job.
+
+    Args:
+        job_id: UUID of the training job
+
+    Returns:
+        tuple: JSON response with job status and HTTP status code
+
+    Response:
+        {
+            'network_id': str,
+            'status': 'pending' | 'training' | 'completed' | 'failed',
+            'progress': float,
+            'epochs': int,
+            'accuracy': float (if completed),
+            'error': str (if failed)
+        }
+    """
     if job_id not in training_jobs:
+        logger.warning(f"Status requested for non-existent job: {job_id}")
         return jsonify({'error': 'Training job not found'}), 404
     
-    return jsonify(training_jobs[job_id])
+    return jsonify(training_jobs[job_id]), 200
 
 @app.route('/api/networks', methods=['GET'])
-def list_networks():
-    """List all available networks"""
+def list_networks() -> Tuple[Dict[str, Any], int]:
+    """
+    List all available networks (both in-memory and saved).
+
+    Returns:
+        tuple: JSON response with network list and HTTP status code
+
+    Response:
+        {
+            'networks': [
+                {
+                    'network_id': str,
+                    'architecture': list,
+                    'trained': bool,
+                    'accuracy': float,
+                    'status': 'in_memory' | 'saved'
+                },
+                ...
+            ]
+        }
+    """
     # Combine in-memory and saved networks
     in_memory = [
         {
@@ -227,7 +445,7 @@ def list_networks():
         for nid, info in active_networks.items()
     ]
     
-    # Get saved networks, but exclude ones already in memory to avoid duplicates
+    # Get saved networks, exclude ones already in memory to avoid duplicates
     in_memory_ids = set(active_networks.keys())
     saved = list_saved_networks()
     saved_not_in_memory = []
@@ -236,13 +454,33 @@ def list_networks():
             net['status'] = 'saved'
             saved_not_in_memory.append(net)
 
+    logger.debug(
+        f"Listing networks: {len(in_memory)} in memory, "
+        f"{len(saved_not_in_memory)} saved only"
+    )
+
     return jsonify({
         'networks': in_memory + saved_not_in_memory
-    })
+    }), 200
 
 @app.route('/api/networks/<network_id>', methods=['DELETE'])
-def delete_network_endpoint(network_id):
-    """Delete a network (both from memory and disk)"""
+def delete_network_endpoint(network_id: str) -> Tuple[Dict[str, Any], int]:
+    """
+    Delete a network from both memory and disk.
+
+    Args:
+        network_id: UUID of the network to delete
+
+    Returns:
+        tuple: JSON response with deletion details and HTTP status code
+
+    Response:
+        {
+            'network_id': str,
+            'deleted_from_memory': bool,
+            'deleted_from_disk': bool
+        }
+    """
     # Remove from active networks if present
     deleted_from_memory = False
     if network_id in active_networks:
@@ -253,17 +491,36 @@ def delete_network_endpoint(network_id):
     deleted_from_disk = delete_network(network_id)
     
     if not deleted_from_memory and not deleted_from_disk:
+        logger.warning(f"Delete attempted for non-existent network: {network_id}")
         return jsonify({'error': 'Network not found'}), 404
     
+    logger.info(
+        f"Deleted network {network_id}: "
+        f"memory={deleted_from_memory}, disk={deleted_from_disk}"
+    )
+
     return jsonify({
         'network_id': network_id,
         'deleted_from_memory': deleted_from_memory,
         'deleted_from_disk': deleted_from_disk
-    })
+    }), 200
 
 @app.route('/api/networks', methods=['DELETE'])
-def delete_all_networks():
-    """Delete all networks (both from memory and disk)"""
+def delete_all_networks() -> Tuple[Dict[str, Any], int]:
+    """
+    Delete all networks from both memory and disk.
+
+    Returns:
+        tuple: JSON response with deletion summary and HTTP status code
+
+    Response:
+        {
+            'deleted_count': int,
+            'deleted_from_memory': int,
+            'deleted_from_disk': int,
+            'message': str
+        }
+    """
     # Get all network IDs (in-memory and saved)
     in_memory_ids = list(active_networks.keys())
     saved_networks = list_saved_networks()
@@ -289,28 +546,102 @@ def delete_all_networks():
 
         deleted_count += 1
 
+    logger.info(
+        f"Deleted all networks: {deleted_count} total, "
+        f"{deleted_from_memory_count} from memory, "
+        f"{deleted_from_disk_count} from disk"
+    )
+
     return jsonify({
         'deleted_count': deleted_count,
         'deleted_from_memory': deleted_from_memory_count,
         'deleted_from_disk': deleted_from_disk_count,
         'message': f'Successfully deleted {deleted_count} network(s)'
-    })
+    }), 200
+
+def _convert_to_float_list(array: np.ndarray) -> list:
+    """
+    Convert numpy array to list of floats for JSON serialization.
+
+    Args:
+        array: Numpy array to convert
+
+    Returns:
+        list: List of float values
+    """
+    return [
+        float(val.item()) if hasattr(val, 'item') else float(val)
+        for val in array.flatten()
+    ]
+
+
+def _create_digit_image(
+    image_data: np.ndarray,
+    predicted: int,
+    actual: int
+) -> str:
+    """
+    Create a base64-encoded PNG image of a digit.
+
+    Args:
+        image_data: 784-element array representing the digit image
+        predicted: Predicted digit (0-9)
+        actual: Actual digit (0-9)
+
+    Returns:
+        str: Base64-encoded PNG image
+    """
+    plt.figure(figsize=(3, 3))
+    plt.imshow(image_data.reshape(28, 28), cmap='gray')
+    plt.title(f"Predicted: {predicted} | Actual: {actual}")
+    plt.axis('off')
+
+    # Save image to buffer
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', bbox_inches='tight')
+    buffer.seek(0)
+    img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    plt.close()
+
+    return img_base64
 
 
 @app.route('/api/networks/<network_id>/successful_example', methods=['GET'])
-def get_successful_example(network_id):
-    """Return a random successful example prediction with network output details"""
+def get_successful_example(
+    network_id: str
+) -> Tuple[Dict[str, Any], int]:
+    """
+    Return a random successful example prediction with network output details.
+
+    Args:
+        network_id: UUID of the network
+
+    Returns:
+        tuple: JSON response with example details and HTTP status code
+
+    Response:
+        {
+            'network_id': str,
+            'example_index': int,
+            'predicted_digit': int,
+            'actual_digit': int,
+            'image_data': str (base64),
+            'output_weights': list,
+            'network_output': list
+        }
+    """
     if network_id not in active_networks:
+        logger.warning(
+            f"Successful example requested for non-existent network: "
+            f"{network_id}"
+        )
         return jsonify({'error': 'Network not found'}), 404
         
     net = active_networks[network_id]['network']
     
     # Find a successful example
-    successful_example = None
-    attempts = 0
     max_attempts = 100
-    
-    while successful_example is None and attempts < max_attempts:
+    for attempt in range(max_attempts):
         # Choose a random example from test data
         index = np.random.randint(0, len(test_data))
         x, y = test_data[index]
@@ -321,58 +652,70 @@ def get_successful_example(network_id):
         actual_digit = int(y)
         
         if predicted_digit == actual_digit:
-            successful_example = {
-                'index': index,
-                'x': x,
-                'y': actual_digit,
-                'output': output,
-                'predicted': predicted_digit
-            }
-        attempts += 1
-    
-    if successful_example is None:
-        return jsonify({'error': 'No successful example found after multiple attempts'}), 404
-    
-    # Create image of the digit
-    plt.figure(figsize=(3, 3))
-    plt.imshow(successful_example['x'].reshape(28, 28), cmap='gray')
-    plt.title(f"Predicted: {successful_example['predicted']} | Actual: {successful_example['y']}")
-    plt.axis('off')
-    
-    # Save image to buffer
-    buffer = BytesIO()
-    plt.savefig(buffer, format='png')
-    buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    plt.close()
-    
-    # Get the output layer weights (last layer in the network)
-    output_weights = net.weights[-1].tolist()
-    
+            logger.debug(
+                f"Found successful example on attempt {attempt + 1}"
+            )
+
+            # Create image
+            img_base64 = _create_digit_image(x, predicted_digit, actual_digit)
+
+            # Get output layer weights
+            output_weights = net.weights[-1].tolist()
+
+            return jsonify({
+                'network_id': network_id,
+                'example_index': index,
+                'predicted_digit': predicted_digit,
+                'actual_digit': actual_digit,
+                'image_data': img_base64,
+                'output_weights': output_weights,
+                'network_output': _convert_to_float_list(output)
+            }), 200
+
+    logger.warning(
+        f"No successful example found after {max_attempts} attempts "
+        f"for network {network_id}"
+    )
     return jsonify({
-        'network_id': network_id,
-        'example_index': successful_example['index'],
-        'predicted_digit': successful_example['predicted'],
-        'actual_digit': successful_example['y'],
-        'image_data': img_base64,
-        'output_weights': output_weights,
-        'network_output': [float(val.item()) if hasattr(val, 'item') else float(val) for val in successful_example['output']]
-    })
+        'error': f'No successful example found after {max_attempts} attempts'
+    }), 404
 
 @app.route('/api/networks/<network_id>/unsuccessful_example', methods=['GET'])
-def get_unsuccessful_example(network_id):
-    """Return a random unsuccessful example prediction with network output details"""
+def get_unsuccessful_example(
+    network_id: str
+) -> Tuple[Dict[str, Any], int]:
+    """
+    Return a random unsuccessful example prediction with network details.
+
+    Args:
+        network_id: UUID of the network
+
+    Returns:
+        tuple: JSON response with example details and HTTP status code
+
+    Response:
+        {
+            'network_id': str,
+            'example_index': int,
+            'predicted_digit': int,
+            'actual_digit': int,
+            'image_data': str (base64),
+            'output_weights': list,
+            'network_output': list
+        }
+    """
     if network_id not in active_networks:
+        logger.warning(
+            f"Unsuccessful example requested for non-existent network: "
+            f"{network_id}"
+        )
         return jsonify({'error': 'Network not found'}), 404
         
     net = active_networks[network_id]['network']
     
     # Find an unsuccessful example
-    unsuccessful_example = None
-    attempts = 0
     max_attempts = 200
-    
-    while unsuccessful_example is None and attempts < max_attempts:
+    for attempt in range(max_attempts):
         # Choose a random example from test data
         index = np.random.randint(0, len(test_data))
         x, y = test_data[index]
@@ -383,52 +726,55 @@ def get_unsuccessful_example(network_id):
         actual_digit = int(y)
         
         if predicted_digit != actual_digit:
-            unsuccessful_example = {
-                'index': index,
-                'x': x,
-                'y': actual_digit,
-                'output': output,
-                'predicted': predicted_digit
-            }
-        attempts += 1
-    
-    if unsuccessful_example is None:
-        return jsonify({'error': 'No unsuccessful example found after multiple attempts'}), 404
-    
-    # Create image of the digit
-    plt.figure(figsize=(3, 3))
-    plt.imshow(unsuccessful_example['x'].reshape(28, 28), cmap='gray')
-    plt.title(f"Predicted: {unsuccessful_example['predicted']} | Actual: {unsuccessful_example['y']}")
-    plt.axis('off')
-    
-    # Save image to buffer
-    buffer = BytesIO()
-    plt.savefig(buffer, format='png')
-    buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-    plt.close()
-    
-    # Get the output layer weights (last layer in the network)
-    output_weights = net.weights[-1].tolist()
-    
+            logger.debug(
+                f"Found unsuccessful example on attempt {attempt + 1}"
+            )
+
+            # Create image
+            img_base64 = _create_digit_image(x, predicted_digit, actual_digit)
+
+            # Get output layer weights
+            output_weights = net.weights[-1].tolist()
+
+            return jsonify({
+                'network_id': network_id,
+                'example_index': index,
+                'predicted_digit': predicted_digit,
+                'actual_digit': actual_digit,
+                'image_data': img_base64,
+                'output_weights': output_weights,
+                'network_output': _convert_to_float_list(output)
+            }), 200
+
+    logger.warning(
+        f"No unsuccessful example found after {max_attempts} attempts "
+        f"for network {network_id}"
+    )
     return jsonify({
-        'network_id': network_id,
-        'example_index': unsuccessful_example['index'],
-        'predicted_digit': unsuccessful_example['predicted'],
-        'actual_digit': unsuccessful_example['y'],
-        'image_data': img_base64,
-        'output_weights': output_weights,
-        'network_output': [float(val.item()) if hasattr(val, 'item') else float(val) for val in unsuccessful_example['output']]
-    })
+        'error': f'No unsuccessful example found after {max_attempts} attempts'
+    }), 404
 
 @app.route('/')
-def index():
-    """Serve the main frontend page"""
+def index() -> Any:
+    """
+    Serve the main frontend page.
+
+    Returns:
+        HTML response with the index page
+    """
     return send_from_directory(app.static_folder, 'index.html')
 
 @app.route('/<path:path>')
-def serve_static(path):
-    """Serve static files"""
+def serve_static(path: str) -> Any:
+    """
+    Serve static files.
+
+    Args:
+        path: Path to the static file
+
+    Returns:
+        Static file response
+    """
     return send_from_directory(app.static_folder, path)
 
 if __name__ == '__main__':
@@ -436,21 +782,24 @@ if __name__ == '__main__':
     static_dir = os.path.join(os.path.dirname(__file__), 'static')
     if not os.path.exists(static_dir):
         os.makedirs(static_dir)
-    
-    # Check if we're running in a cloud environment like Railway
-    is_production = os.environ.get('RAILWAY_STATIC_URL', False) or os.environ.get('PORT', False)
-    
+        logger.info(f"Created static directory: {static_dir}")
+
+    # Check if we're running in a cloud environment
+    is_production = bool(
+        os.environ.get('RAILWAY_STATIC_URL') or
+        os.environ.get('PORT')
+    )
+
     # Get port from environment variable or use default
     port = int(os.environ.get('PORT', 8000))
     
-    # Tell the user where the server is running
+    # Log server startup information
     if is_production:
-        print(f"Server running in production mode on port {port}")
+        logger.info(f"Starting server in production mode on port {port}")
     else:
-        print(f"Server running at http://localhost:{port}/")
-    
-    # Use SocketIO for running the app instead of regular Flask
-    # This enables WebSocket support
+        logger.info(f"Starting server at http://localhost:{port}/")
+
+    # Use SocketIO for running the app (enables WebSocket support)
     try:
         socketio.run(
             app,
@@ -458,14 +807,17 @@ if __name__ == '__main__':
             port=port,
             debug=not is_production,
             use_reloader=False,
-            allow_unsafe_werkzeug=True  # Required for newer versions of Flask-SocketIO
+            allow_unsafe_werkzeug=True
         )
     except OSError as e:
         if "Address already in use" in str(e):
-            print(f"Error: Port {port} is already in use.")
-            print("Please terminate the other server process before starting a new one.")
-            print("You can use the command: pkill -f 'python src/api_server.py'")
-            import sys
+            logger.error(
+                f"Port {port} is already in use. "
+                f"Please terminate the other process first."
+            )
+            logger.info(
+                "You can use: pkill -f 'python src/api_server.py'"
+            )
             sys.exit(1)
         else:
             raise
