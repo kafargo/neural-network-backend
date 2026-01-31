@@ -19,6 +19,7 @@ from model_persistence import (
     list_saved_networks,
     delete_network,
     get_network_metadata,
+    delete_old_networks,
     ModelDatabase
 )
 
@@ -341,3 +342,189 @@ class TestPersistenceIntegration:
         # Verify all deleted
         networks = list_saved_networks(temp_db_dir)
         assert len(networks) == 0
+
+
+class TestDeleteOldNetworks:
+    """Tests for automatic cleanup of old networks."""
+
+    def test_delete_old_networks_basic(self, simple_network, temp_db_dir):
+        """Test basic delete_old_networks functionality."""
+        import time
+        import sqlite3
+
+        # Save a network
+        network_id = "test_network"
+        save_network(simple_network, network_id, model_dir=temp_db_dir)
+
+        # Manually update the created_at timestamp to 3 days ago
+        db_path = os.path.join(temp_db_dir, "networks.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE networks 
+            SET created_at = datetime('now', '-3 days')
+            WHERE network_id = ?
+        ''', (network_id,))
+        conn.commit()
+        conn.close()
+
+        # Delete networks older than 2 days
+        deleted_count = delete_old_networks(days=2, model_dir=temp_db_dir)
+
+        assert deleted_count == 1
+        assert load_network(network_id, temp_db_dir) is None
+
+    def test_delete_old_networks_preserves_recent(
+        self,
+        simple_network,
+        temp_db_dir
+    ):
+        """Test that recent networks are not deleted."""
+        # Save a new network
+        network_id = "recent_network"
+        save_network(simple_network, network_id, model_dir=temp_db_dir)
+
+        # Try to delete old networks
+        deleted_count = delete_old_networks(days=2, model_dir=temp_db_dir)
+
+        # Should not delete recent network
+        assert deleted_count == 0
+        assert load_network(network_id, temp_db_dir) is not None
+
+    def test_delete_old_networks_mixed_ages(
+        self,
+        simple_network,
+        temp_db_dir
+    ):
+        """Test with a mix of old and recent networks."""
+        import sqlite3
+
+        # Create multiple networks
+        old_ids = ["old_1", "old_2"]
+        recent_ids = ["recent_1", "recent_2"]
+
+        for network_id in old_ids + recent_ids:
+            save_network(simple_network, network_id, model_dir=temp_db_dir)
+
+        # Manually age the old networks
+        db_path = os.path.join(temp_db_dir, "networks.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        for network_id in old_ids:
+            cursor.execute('''
+                UPDATE networks 
+                SET created_at = datetime('now', '-3 days')
+                WHERE network_id = ?
+            ''', (network_id,))
+        conn.commit()
+        conn.close()
+
+        # Delete networks older than 2 days
+        deleted_count = delete_old_networks(days=2, model_dir=temp_db_dir)
+
+        # Verify old ones deleted, recent ones remain
+        assert deleted_count == len(old_ids)
+        for network_id in old_ids:
+            assert load_network(network_id, temp_db_dir) is None
+        for network_id in recent_ids:
+            assert load_network(network_id, temp_db_dir) is not None
+
+    def test_delete_old_networks_custom_days(
+        self,
+        simple_network,
+        temp_db_dir
+    ):
+        """Test delete_old_networks with different day thresholds."""
+        import sqlite3
+
+        network_id = "test_network"
+        save_network(simple_network, network_id, model_dir=temp_db_dir)
+
+        # Age the network to 5 days old
+        db_path = os.path.join(temp_db_dir, "networks.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE networks 
+            SET created_at = datetime('now', '-5 days')
+            WHERE network_id = ?
+        ''', (network_id,))
+        conn.commit()
+        conn.close()
+
+        # Should not delete (older than 7 days)
+        deleted_count = delete_old_networks(days=7, model_dir=temp_db_dir)
+        assert deleted_count == 0
+        assert load_network(network_id, temp_db_dir) is not None
+
+        # Should delete (older than 3 days)
+        deleted_count = delete_old_networks(days=3, model_dir=temp_db_dir)
+        assert deleted_count == 1
+        assert load_network(network_id, temp_db_dir) is None
+
+    def test_delete_old_networks_empty_db(self, temp_db_dir):
+        """Test delete_old_networks on empty database."""
+        deleted_count = delete_old_networks(days=2, model_dir=temp_db_dir)
+        assert deleted_count == 0
+
+    def test_delete_old_networks_negative_days(self, temp_db_dir):
+        """Test that negative days raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            delete_old_networks(days=-1, model_dir=temp_db_dir)
+        assert "non-negative" in str(exc_info.value)
+
+    def test_delete_old_networks_zero_days(
+        self,
+        simple_network,
+        temp_db_dir
+    ):
+        """Test delete_old_networks with days=0."""
+        import sqlite3
+
+        # Save a network
+        network_id = "test_network"
+        save_network(simple_network, network_id, model_dir=temp_db_dir)
+
+        # Age it slightly (1 hour ago)
+        db_path = os.path.join(temp_db_dir, "networks.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE networks 
+            SET created_at = datetime('now', '-1 hour')
+            WHERE network_id = ?
+        ''', (network_id,))
+        conn.commit()
+        conn.close()
+
+        # Should delete anything older than now
+        deleted_count = delete_old_networks(days=0, model_dir=temp_db_dir)
+        assert deleted_count == 1
+        assert load_network(network_id, temp_db_dir) is None
+
+    def test_model_database_delete_old_networks_method(self, temp_db_dir):
+        """Test ModelDatabase.delete_old_networks_from_db directly."""
+        import sqlite3
+
+        db = ModelDatabase(db_path=os.path.join(temp_db_dir, "networks.db"))
+        net = Network([3, 4, 2])
+
+        # Save network
+        db.save_network_to_db(net, "test_network", trained=False)
+
+        # Age it
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE networks 
+            SET created_at = datetime('now', '-3 days')
+            WHERE network_id = ?
+        ''', ("test_network",))
+        conn.commit()
+        conn.close()
+
+        # Delete old networks
+        deleted = db.delete_old_networks_from_db(days=2)
+        assert deleted == 1
+        assert db.load_network_from_db("test_network") is None
+

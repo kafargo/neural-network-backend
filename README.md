@@ -85,6 +85,8 @@ Visit `http://localhost:8000/` in your browser to see the simple network managem
 - See training status and accuracy
 - Delete networks
 
+> **Note**: The server automatically deletes networks older than 2 days every 24 hours to prevent database bloat.
+
 ## API Endpoints
 
 ### Core Endpoints
@@ -106,6 +108,11 @@ Visit `http://localhost:8000/` in your browser to see the simple network managem
 
 - **DELETE /api/networks**  
   Delete all networks (both in-memory and saved)
+
+- **POST /api/networks/cleanup**  
+  Manually trigger cleanup of old networks  
+  Body: `{"days": 2}` (optional, default: 2)  
+  Deletes networks older than the specified number of days
 
 #### Training
 - **POST /api/networks/{network_id}/train**  

@@ -266,6 +266,61 @@ class ModelDatabase:
                 )
             return deleted
 
+    def delete_old_networks_from_db(self, days: int = 2) -> int:
+        """
+        Delete networks older than the specified number of days.
+
+        Args:
+            days: Number of days (networks older than this will be deleted)
+
+        Returns:
+            int: Number of networks deleted
+
+        Raises:
+            ValueError: If days is negative
+        """
+        if days < 0:
+            raise ValueError(f"Days must be non-negative, got {days}")
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # First, get the list of networks to be deleted for logging
+            cursor.execute('''
+                SELECT network_id, created_at 
+                FROM networks 
+                WHERE datetime(created_at) <= datetime('now', '-' || ? || ' days')
+            ''', (days,))
+
+            networks_to_delete = cursor.fetchall()
+
+            if networks_to_delete:
+                logger.info(
+                    f"Found {len(networks_to_delete)} network(s) older than "
+                    f"{days} day(s) to delete"
+                )
+                for row in networks_to_delete:
+                    logger.debug(
+                        f"  - {row['network_id']} (created: {row['created_at']})"
+                    )
+
+            # Now delete them
+            cursor.execute('''
+                DELETE FROM networks 
+                WHERE datetime(created_at) <= datetime('now', '-' || ? || ' days')
+            ''', (days,))
+
+            deleted_count = cursor.rowcount
+
+            if deleted_count > 0:
+                logger.info(
+                    f"Successfully deleted {deleted_count} old network(s)"
+                )
+            else:
+                logger.debug("No old networks to delete")
+
+            return deleted_count
+
     def get_network_metadata_from_db(
         self,
         network_id: str
@@ -556,3 +611,50 @@ def get_network_metadata(
             f"Unexpected error getting metadata for '{network_id}': {e}"
         )
         return None
+
+
+def delete_old_networks(days: int = 2, model_dir: str = 'models') -> int:
+    """
+    Delete networks older than the specified number of days.
+
+    This function is useful for automatic cleanup of old networks to
+    prevent database bloat. It can be called manually or scheduled to
+    run periodically.
+
+    Args:
+        days: Number of days (networks older than this will be deleted)
+        model_dir: Directory where the database is stored
+
+    Returns:
+        int: Number of networks deleted, or -1 if an error occurred
+
+    Raises:
+        ValueError: If days is negative
+
+    Example:
+        >>> # Delete networks older than 2 days
+        >>> deleted_count = delete_old_networks(days=2)
+        >>> print(f"Deleted {deleted_count} old networks")
+    """
+    if days < 0:
+        raise ValueError(f"Days must be non-negative, got {days}")
+
+    try:
+        # Use singleton if default path, otherwise create new instance
+        if model_dir == 'models':
+            db = _get_db()
+        else:
+            db = ModelDatabase(db_path=f'{model_dir}/networks.db')
+
+        return db.delete_old_networks_from_db(days)
+
+    except ValueError:
+        # Re-raise validation errors
+        raise
+    except sqlite3.Error as e:
+        logger.error(f"Database error deleting old networks: {e}")
+        return -1
+    except Exception as e:
+        logger.exception(f"Unexpected error deleting old networks: {e}")
+        return -1
+

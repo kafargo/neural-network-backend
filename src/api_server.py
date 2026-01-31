@@ -42,7 +42,8 @@ from src import mnist_loader
 from src.model_persistence import (
     save_network,
     list_saved_networks,
-    delete_network
+    delete_network,
+    delete_old_networks
 )
 
 # Configure logging
@@ -110,6 +111,48 @@ def load_mnist_data() -> None:
 
 # Load data at module initialization
 load_mnist_data()
+
+
+def cleanup_old_networks_task() -> None:
+    """
+    Background task to periodically clean up old networks.
+
+    This task runs continuously in the background and deletes networks
+    older than 2 days every 24 hours. It helps prevent database bloat
+    and removes stale test/training networks.
+    """
+    while True:
+        try:
+            # Wait 24 hours between cleanup runs
+            # Using 86400 seconds (24 hours) as the interval
+            gevent.sleep(86400)
+
+            logger.info("Starting automatic cleanup of old networks...")
+            deleted_count = delete_old_networks(days=2)
+
+            if deleted_count > 0:
+                logger.info(
+                    f"Automatic cleanup completed: "
+                    f"deleted {deleted_count} network(s)"
+                )
+            else:
+                logger.debug("Automatic cleanup completed: no old networks found")
+
+        except Exception as e:
+            logger.exception(f"Error during automatic network cleanup: {e}")
+            # Continue running despite errors
+            continue
+
+
+def start_cleanup_task() -> None:
+    """
+    Start the background cleanup task using gevent.
+
+    This should be called once when the server starts.
+    """
+    logger.info("Starting automatic network cleanup task (runs every 24 hours)")
+    socketio.start_background_task(cleanup_old_networks_task)
+
 
 @app.route('/api/status', methods=['GET'])
 def get_status() -> Tuple[Dict[str, Any], int]:
@@ -559,6 +602,65 @@ def delete_all_networks() -> Tuple[Dict[str, Any], int]:
         'message': f'Successfully deleted {deleted_count} network(s)'
     }), 200
 
+
+@app.route('/api/networks/cleanup', methods=['POST'])
+def cleanup_old_networks_endpoint() -> Tuple[Dict[str, Any], int]:
+    """
+    Manually trigger cleanup of networks older than specified days.
+
+    Request Body:
+        {
+            'days': 2  # Optional, default: 2
+        }
+
+    Returns:
+        tuple: JSON response with cleanup summary and HTTP status code
+
+    Response:
+        {
+            'deleted_count': int,
+            'days': int,
+            'message': str
+        }
+    """
+    data = request.get_json() or {}
+    days = data.get('days', 2)
+
+    # Validate days parameter
+    if not isinstance(days, (int, float)) or days < 0:
+        return jsonify({
+            'error': 'days must be a non-negative number'
+        }), 400
+
+    try:
+        deleted_count = delete_old_networks(days=int(days))
+
+        if deleted_count == -1:
+            return jsonify({
+                'error': 'Error occurred during cleanup'
+            }), 500
+
+        logger.info(
+            f"Manual cleanup triggered: deleted {deleted_count} network(s) "
+            f"older than {days} day(s)"
+        )
+
+        return jsonify({
+            'deleted_count': deleted_count,
+            'days': days,
+            'message': (
+                f'Successfully deleted {deleted_count} network(s) '
+                f'older than {days} day(s)'
+            )
+        }), 200
+
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.exception(f"Error during manual cleanup: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
 def _convert_to_float_list(array: np.ndarray) -> list:
     """
     Convert numpy array to list of floats for JSON serialization.
@@ -798,6 +900,9 @@ if __name__ == '__main__':
         logger.info(f"Starting server in production mode on port {port}")
     else:
         logger.info(f"Starting server at http://localhost:{port}/")
+
+    # Start the background cleanup task
+    start_cleanup_task()
 
     # Use SocketIO for running the app (enables WebSocket support)
     try:

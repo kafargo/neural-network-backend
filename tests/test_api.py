@@ -332,3 +332,83 @@ class TestTrainingFlow:
         # Network might still be in memory if training hasn't finished
         # but delete should have been called successfully
 
+
+@pytest.mark.api
+class TestCleanupEndpoint:
+    """Tests for the network cleanup endpoint."""
+
+    def test_cleanup_endpoint_default_days(self, flask_client):
+        """Test cleanup endpoint with default 2 days."""
+        import sqlite3
+        import os
+
+        # Create some test networks
+        response1 = flask_client.post('/api/networks', json={'layer_sizes': [784, 30, 10]})
+        assert response1.status_code == 201
+        network_id = json.loads(response1.data)['network_id']
+
+        # Age the network in the database
+        db_path = 'models/networks.db'
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE networks 
+                SET created_at = datetime('now', '-3 days')
+                WHERE network_id = ?
+            ''', (network_id,))
+            conn.commit()
+            conn.close()
+
+            # Trigger cleanup
+            cleanup_response = flask_client.post('/api/networks/cleanup', json={})
+            assert cleanup_response.status_code == 200
+            cleanup_data = json.loads(cleanup_response.data)
+            assert 'deleted_count' in cleanup_data
+            assert cleanup_data['days'] == 2
+
+    def test_cleanup_endpoint_custom_days(self, flask_client):
+        """Test cleanup endpoint with custom days parameter."""
+        cleanup_response = flask_client.post(
+            '/api/networks/cleanup',
+            json={'days': 7}
+        )
+        assert cleanup_response.status_code == 200
+        cleanup_data = json.loads(cleanup_response.data)
+        assert 'deleted_count' in cleanup_data
+        assert cleanup_data['days'] == 7
+        assert 'message' in cleanup_data
+
+    def test_cleanup_endpoint_invalid_days(self, flask_client):
+        """Test cleanup endpoint with invalid days parameter."""
+        # Test negative days
+        response = flask_client.post(
+            '/api/networks/cleanup',
+            json={'days': -1}
+        )
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'error' in data
+
+    def test_cleanup_endpoint_no_old_networks(self, flask_client):
+        """Test cleanup endpoint when no old networks exist."""
+        cleanup_response = flask_client.post(
+            '/api/networks/cleanup',
+            json={'days': 2}
+        )
+        assert cleanup_response.status_code == 200
+        cleanup_data = json.loads(cleanup_response.data)
+        assert cleanup_data['deleted_count'] >= 0
+
+    def test_cleanup_endpoint_without_json(self, flask_client):
+        """Test cleanup endpoint without JSON body."""
+        cleanup_response = flask_client.post(
+            '/api/networks/cleanup',
+            json={}
+        )
+        assert cleanup_response.status_code == 200
+        cleanup_data = json.loads(cleanup_response.data)
+        # Should use default value of 2 days
+        assert cleanup_data['days'] == 2
+
+
