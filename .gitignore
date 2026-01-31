@@ -7,6 +7,11 @@
 
 # Models and data
 *.pkl
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+models/networks.db
 
 # Python cache
 *.pyc

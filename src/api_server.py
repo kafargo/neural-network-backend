@@ -21,27 +21,15 @@ matplotlib.use('Agg')  # Use the Agg backend which doesn't require a display
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Import our existing network code
-try:
-    # Try direct imports first (when running as a module)
-    from src import network
-    from src import mnist_loader
-    from src.model_persistence import (
-        save_network,
-        load_network,
-        list_saved_networks,
-        delete_network
-    )
-except ImportError:
-    # Fall back to relative imports (when running directly)
-    import network
-    import mnist_loader
-    from model_persistence import (
-        save_network,
-        load_network,
-        list_saved_networks,
-        delete_network
-    )
+# Import our existing network code from the src package
+from src import network
+from src import mnist_loader
+from src.model_persistence import (
+    save_network,
+    load_network,
+    list_saved_networks,
+    delete_network
+)
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static')
