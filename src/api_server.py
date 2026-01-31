@@ -13,7 +13,7 @@ This module provides endpoints for:
 The server uses:
 - Flask for REST API endpoints
 - Flask-SocketIO for WebSocket communication
-- Eventlet for async background training tasks
+- Gevent for async background training tasks
 - SQLite for network persistence
 """
 
@@ -22,21 +22,10 @@ import sys
 import uuid
 import base64
 import logging
-import warnings
 from io import BytesIO
 from typing import Dict, Any, Tuple
 
-# Suppress Eventlet deprecation warning before import
-# Note: Eventlet is deprecated but still functional for this use case.
-# Future versions should migrate to alternative async frameworks (e.g., asyncio, gevent)
-# See: https://eventlet.readthedocs.io/en/latest/asyncio/migration.html
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-
-import eventlet
-
-# Restore default warning behavior after eventlet import
-warnings.filterwarnings('default', category=DeprecationWarning)
-
+import gevent
 import numpy as np
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -71,7 +60,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
-    async_mode='eventlet',
+    async_mode='gevent',
     logger=True,
     engineio_logger=True,
     ping_timeout=60,   # Seconds before considering connection dead
@@ -263,7 +252,7 @@ def train_network(network_id: str) -> Tuple[Dict[str, Any], int]:
         f"learning_rate={learning_rate}"
     )
 
-    # Start training in a background task (compatible with eventlet)
+    # Start training in a background task (using gevent)
     socketio.start_background_task(
         train_network_task,
         network_id, job_id, epochs, mini_batch_size, learning_rate
@@ -285,7 +274,7 @@ def train_network_task(
     """
     Background task to train a neural network.
 
-    This function runs in a separate eventlet greenthread and sends progress
+    This function runs in a separate gevent greenlet and sends progress
     updates via WebSocket as training progresses.
 
     Args:
@@ -331,8 +320,8 @@ def train_network_task(
 
         # Emit the progress update through WebSocket
         socketio.emit('training_update', update_data)
-        # Yield control to eventlet to send the message immediately
-        eventlet.sleep(0)
+        # Yield control to gevent to send the message immediately
+        gevent.sleep(0)
 
     try:
         logger.info(f"Starting training for job {job_id}")
@@ -375,8 +364,8 @@ def train_network_task(
             'accuracy': float(accuracy),
             'progress': 100
         })
-        # Yield control to eventlet to send the message immediately
-        eventlet.sleep(0)
+        # Yield control to gevent to send the message immediately
+        gevent.sleep(0)
 
     except Exception as e:
         logger.exception(f"Training failed for job {job_id}: {e}")
@@ -392,8 +381,8 @@ def train_network_task(
             'status': 'failed',
             'error': str(e)
         })
-        # Yield control to eventlet to send the message immediately
-        eventlet.sleep(0)
+        # Yield control to gevent to send the message immediately
+        gevent.sleep(0)
 
 @app.route('/api/training/<job_id>', methods=['GET'])
 def get_training_status(job_id: str) -> Tuple[Dict[str, Any], int]:
