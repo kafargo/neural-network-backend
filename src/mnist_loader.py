@@ -14,11 +14,6 @@ instead of the legacy pickle format. The NPZ format is:
 For details of the data structures that are returned, see the doc strings
 for ``load_data`` and ``load_data_wrapper``. In practice,
 ``load_data_wrapper`` is the function usually called by our neural network code.
-
-Migration:
-----------
-To convert from the legacy format, run:
-    python scripts/convert_mnist_to_npz.py
 """
 
 #### Libraries
