@@ -22,9 +22,9 @@ ENV PYTHONUNBUFFERED=1 \
 # Expose port
 EXPOSE ${PORT}
 
-# Run with gunicorn using eventlet worker for WebSocket support
-# -k eventlet: Use eventlet async worker (required for WebSockets)
-# -w 1: Single worker (eventlet handles concurrency internally)
+# Run with gunicorn using gevent worker for WebSocket support
+# -k gevent: Use gevent async worker (required for WebSockets)
+# -w 1: Single worker (gevent handles concurrency internally)
 # --timeout 300: 5 minute timeout for long-running training tasks
 # --log-level info: Better logging for debugging
-CMD ["sh", "-c", "gunicorn -k eventlet -w 1 --timeout 300 --log-level info -b 0.0.0.0:${PORT:-8000} src.api_server:app"]
+CMD ["sh", "-c", "gunicorn -k gevent -w 1 --timeout 300 --log-level info -b 0.0.0.0:${PORT:-8000} src.api_server:app"]
