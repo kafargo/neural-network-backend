@@ -18,9 +18,21 @@ The system consists of:
 
 - **Flask API Server** (`api_server.py`): RESTful HTTP endpoints + WebSocket support
 - **Neural Network Module** (`network.py`): Core backpropagation implementation
-- **MNIST Loader** (`mnist_loader.py`): Handles MNIST dataset loading
+- **MNIST Loader** (`mnist_loader.py`): Handles MNIST dataset loading (NPZ format)
 - **Model Persistence** (`model_persistence.py`): Automatic save/load of trained networks
 - **Simple Landing Page** (`static/index.html`): Basic network management interface
+
+## Technology Stack
+
+- **Python**: 3.9+ recommended
+- **Web Framework**: Flask
+- **WebSocket**: Flask-SocketIO with Socket.IO v4+
+- **Async Backend**: Gevent (active LTS support)
+- **Data Format**: NumPy NPZ (fast, modern)
+- **Database**: SQLite (for model persistence)
+- **Server**: Gunicorn with gevent worker
+
+All dependencies use modern, actively maintained packages with no deprecation warnings.
 
 ## Getting Started
 
@@ -489,12 +501,63 @@ def test_network_creation(simple_network):
     assert simple_network.sizes == [3, 4, 2]
 ```
 
+## Deployment
+
+### Docker Deployment
+
+The project includes a Dockerfile for containerized deployment:
+
+```bash
+# Build the image
+docker build -t neural-network-backend .
+
+# Run the container
+docker run -p 8000:8000 neural-network-backend
+```
+
+The Docker container:
+- Uses Python 3.9
+- Runs Gunicorn with gevent worker for WebSocket support
+- Exposes port 8000
+- Includes all necessary dependencies
+
+### Production Deployment (Railway, Heroku, etc.)
+
+The application is production-ready and configured for cloud deployment:
+
+**Key Configuration:**
+- **Worker**: Gunicorn with `-k gevent` worker class (required for WebSockets)
+- **Port**: Configurable via `PORT` environment variable
+- **Timeout**: 300 seconds for long training operations
+- **CORS**: Enabled for all origins (configure as needed)
+
+**Environment Variables:**
+```bash
+PORT=8000              # Server port (auto-detected by most platforms)
+FLASK_ENV=production   # Production mode
+```
+
+The `Dockerfile` and `railway.json` are pre-configured for deployment.
+
+### Verifying Deployment
+
+After deployment, verify the server is running:
+
+```bash
+# Check status endpoint
+curl https://your-deployment-url.com/api/status
+
+# Expected response:
+# {"status": "ok", "active_networks": 0, "training_jobs": 0}
+```
+
 ## Documentation
 
 For detailed API information, see the `docs/` folder:
 
 - **[docs/API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md)** - Complete REST API documentation with examples
 - **[docs/WEBSOCKET_API_DOCUMENTATION.md](docs/WEBSOCKET_API_DOCUMENTATION.md)** - WebSocket events and Angular integration guide
+- **[docs/TESTING_QUICKREF.md](docs/TESTING_QUICKREF.md)** - Testing guide and commands
 - **[docs/README_ORIGINAL.md](docs/README_ORIGINAL.md)** - Original project documentation
 
 ## Original Project

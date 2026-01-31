@@ -652,45 +652,27 @@ This will help verify that the WebSocket server is working correctly before inte
 
 When deploying to production environments (Docker containers, cloud platforms like Railway, Heroku, etc.), ensure proper configuration:
 
-1. **File Permissions**: The server should not attempt to write debug logs to hardcoded local paths
+1. **Async Backend**: The server uses **gevent** for async WebSocket support (migrated from deprecated eventlet)
 2. **Environment Variables**: Use environment variables for configuration
 3. **Error Handling**: Implement proper error handling for file system operations
+4. **Gunicorn Worker**: Use `-k gevent` worker class in production
 
-### Common Production Issues
+### Current Technology Stack
 
-#### File System Access Errors
+- **Async Framework**: gevent (active LTS support)
+- **WebSocket**: Socket.IO v4+ with gevent backend
+- **Data Format**: NumPy NPZ (modern, fast loading)
+- **Python**: 3.9+ recommended
 
-**Error:** `FileNotFoundError: [Errno 2] No such file or directory: '/Users/alexfargo/debug_training.log'`
+### Production Configuration Example
 
-**Cause:** The application is trying to write debug logs to a hardcoded local file path that doesn't exist in the production container.
-
-**Solution:** Remove debug logging code or use proper logging configuration:
-
-```python
-import logging
-import os
-
-# Configure logging based on environment
-if os.environ.get('FLASK_ENV') == 'production':
-    logging.basicConfig(level=logging.INFO)
-else:
-    logging.basicConfig(level=logging.DEBUG)
-
-# Use logging instead of file writes
-logging.info(f"Training started for network {network_id}")
+#### Dockerfile (Current)
+```dockerfile
+# Uses gevent worker for WebSocket support
+CMD ["sh", "-c", "gunicorn -k gevent -w 1 --timeout 300 --log-level info -b 0.0.0.0:${PORT:-8000} src.api_server:app"]
 ```
 
-#### Container Considerations
-
-For containerized deployments:
-
-- Use stdout/stderr for logging (captured by container orchestration)
-- Avoid writing to local filesystem unless using mounted volumes
-- Use environment variables for configuration
-- Ensure proper signal handling for graceful shutdowns
-
-### Production-Ready Configuration
-
+#### Python Application Configuration
 ```python
 # Example production configuration
 import os
@@ -698,7 +680,13 @@ from flask import Flask
 from flask_socketio import SocketIO
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*",
+    async_mode='gevent',  # Uses gevent for async operations
+    logger=True,
+    engineio_logger=True
+)
 
 # Production settings
 is_production = os.environ.get('FLASK_ENV') == 'production'
@@ -710,7 +698,48 @@ if __name__ == '__main__':
         host='0.0.0.0',
         port=port,
         debug=not is_production,
-        use_reloader=False,
-        allow_unsafe_werkzeug=True
+        use_reloader=False
     )
 ```
+
+### Container Considerations
+
+For containerized deployments:
+
+- Use stdout/stderr for logging (captured by container orchestration)
+- Avoid writing to local filesystem unless using mounted volumes
+- Use environment variables for configuration
+- Ensure proper signal handling for graceful shutdowns
+- Use gevent worker class for gunicorn: `-k gevent`
+
+### Common Production Issues
+
+#### WebSocket Connection Issues
+
+**Symptoms**: WebSocket connections fail or drop frequently
+
+**Solutions**:
+- Verify CORS settings allow your frontend domain
+- Check firewall/load balancer WebSocket support
+- Ensure gunicorn uses gevent worker: `-k gevent`
+- Increase timeout values if training is slow
+
+#### Performance Optimization
+
+For better performance:
+- Use single worker (`-w 1`) with gevent (gevent handles concurrency internally)
+- Increase worker timeout for long-running training: `--timeout 300`
+- Monitor memory usage during training
+- Consider caching trained networks
+
+### Deployment Checklist
+
+- [ ] Environment variables configured (PORT, FLASK_ENV)
+- [ ] Gunicorn uses gevent worker (`-k gevent`)
+- [ ] CORS settings allow frontend domains
+- [ ] Timeout settings appropriate for training duration
+- [ ] Logging configured for production
+- [ ] Health check endpoint accessible (`/api/status`)
+- [ ] WebSocket connections tested
+- [ ] Training progress updates verified
+
