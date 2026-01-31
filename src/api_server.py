@@ -22,10 +22,21 @@ import sys
 import uuid
 import base64
 import logging
+import warnings
 from io import BytesIO
 from typing import Dict, Any, Tuple
 
+# Suppress Eventlet deprecation warning before import
+# Note: Eventlet is deprecated but still functional for this use case.
+# Future versions should migrate to alternative async frameworks (e.g., asyncio, gevent)
+# See: https://eventlet.readthedocs.io/en/latest/asyncio/migration.html
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
 import eventlet
+
+# Restore default warning behavior after eventlet import
+warnings.filterwarnings('default', category=DeprecationWarning)
+
 import numpy as np
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS

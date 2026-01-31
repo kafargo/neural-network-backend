@@ -12,6 +12,12 @@ function usually called by our neural network code.
 # Standard library
 import pickle
 import gzip
+import warnings
+
+# Suppress NumPy deprecation warning from legacy pickle file format
+# The MNIST data file was created with an older NumPy version and triggers
+# deprecation warnings in NumPy 2.4+ when unpickling
+warnings.filterwarnings('ignore', message='.*align.*')
 
 # Third-party libraries
 import numpy as np
