@@ -28,6 +28,6 @@ EXPOSE ${PORT}
 # -w 1: Single worker (gevent handles concurrency internally)
 # --timeout 300: 5 minute timeout for long-running training tasks
 # --log-level warning: Reduce gunicorn logging noise in production
-# --access-logfile -: Send access logs to stdout (filtered by log level)
+# --access-log-file /dev/null: Disable HTTP access logs (Socket.IO polls constantly)
 # --error-logfile -: Send error logs to stderr
-CMD ["sh", "-c", "gunicorn -k gevent -w 1 --timeout 300 --log-level warning --access-logfile - --error-logfile - -b 0.0.0.0:${PORT:-8000} src.api_server:app"]
+CMD ["sh", "-c", "gunicorn -k gevent -w 1 --timeout 300 --log-level warning --access-log-file /dev/null --error-logfile - -b 0.0.0.0:${PORT:-8000} src.api_server:app"]
