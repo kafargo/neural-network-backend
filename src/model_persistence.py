@@ -149,7 +149,11 @@ def save_network(
         True
     """
     try:
-        db = ModelDatabase(db_path=f'{model_dir}/networks.db')
+        # Use singleton if default path, otherwise create new instance
+        if model_dir == 'models':
+            db = _get_db()
+        else:
+            db = ModelDatabase(db_path=f'{model_dir}/networks.db')
 
         # Serialize the network object
         network_data = pickle.dumps(network)
@@ -189,7 +193,11 @@ def load_network(network_id: str, model_dir: str = 'models'):
         ...     print(f"Loaded network with {len(net.sizes)} layers")
     """
     try:
-        db = ModelDatabase(db_path=f'{model_dir}/networks.db')
+        # Use singleton if default path, otherwise create new instance
+        if model_dir == 'models':
+            db = _get_db()
+        else:
+            db = ModelDatabase(db_path=f'{model_dir}/networks.db')
 
         with db._get_connection() as conn:
             cursor = conn.cursor()
@@ -227,7 +235,11 @@ def list_saved_networks(model_dir: str = 'models') -> List[Dict[str, Any]]:
         ...     print(f"{net['network_id']}: {net['architecture']}")
     """
     try:
-        db = ModelDatabase(db_path=f'{model_dir}/networks.db')
+        # Use singleton if default path, otherwise create new instance
+        if model_dir == 'models':
+            db = _get_db()
+        else:
+            db = ModelDatabase(db_path=f'{model_dir}/networks.db')
 
         with db._get_connection() as conn:
             cursor = conn.cursor()
@@ -291,7 +303,11 @@ def delete_network(network_id: str, model_dir: str = 'models') -> bool:
         ...     print("Network deleted successfully")
     """
     try:
-        db = ModelDatabase(db_path=f'{model_dir}/networks.db')
+        # Use singleton if default path, otherwise create new instance
+        if model_dir == 'models':
+            db = _get_db()
+        else:
+            db = ModelDatabase(db_path=f'{model_dir}/networks.db')
 
         with db._get_connection() as conn:
             cursor = conn.cursor()
@@ -328,7 +344,11 @@ def get_network_metadata(network_id: str, model_dir: str = 'models') -> Optional
         ...     print(f"Accuracy: {metadata['accuracy']}")
     """
     try:
-        db = ModelDatabase(db_path=f'{model_dir}/networks.db')
+        # Use singleton if default path, otherwise create new instance
+        if model_dir == 'models':
+            db = _get_db()
+        else:
+            db = ModelDatabase(db_path=f'{model_dir}/networks.db')
 
         with db._get_connection() as conn:
             cursor = conn.cursor()
