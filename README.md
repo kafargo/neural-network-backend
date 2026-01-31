@@ -292,37 +292,113 @@ async function trainWithUpdates() {
 }
 ```
 
+## Model Persistence
+
+The system uses **SQLite** for storing trained neural networks:
+
+- All networks stored in a single `models/networks.db` database
+- **ACID transactions** ensure data integrity
+- **Fast queries** with indexed metadata
+- **Perfect for Docker** - single file, easy volume management
+- **Built-in** - uses Python's standard library `sqlite3` module
+
+### Database Schema
+```sql
+CREATE TABLE networks (
+    network_id TEXT PRIMARY KEY,
+    architecture TEXT NOT NULL,
+    network_data BLOB NOT NULL,
+    trained INTEGER NOT NULL,
+    accuracy REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Railway Deployment ⚠️
+
+**Important**: Railway containers are ephemeral. To persist your database across deployments:
+
+1. **Add a Railway Volume** to your service
+2. **Mount it to `/app/models`** in your Railway settings
+3. This ensures `networks.db` survives deployments and restarts
+
+Without a volume, your database will be reset on every deployment!
+
 ## Project Structure
 
 ```
 neural-networks-and-deep-learning/
 ├── src/
-│   ├── api_server.py          # Main Flask + SocketIO server
-│   ├── network.py              # Neural network implementation
-│   ├── mnist_loader.py         # MNIST data loader
-│   ├── model_persistence.py    # Save/load networks
+│   ├── api_server.py               # Main Flask + SocketIO server
+│   ├── network.py                  # Neural network implementation
+│   ├── mnist_loader.py             # MNIST data loader
+│   ├── model_persistence.py        # SQLite-based save/load
 │   └── static/
-│       └── index.html          # Simple management UI
+│       └── index.html              # Simple management UI
 ├── tests/
-│   ├── conftest.py             # Pytest fixtures and configuration
-│   ├── test_network.py         # Neural network unit tests
-│   ├── test_model_persistence.py  # Model persistence tests
-│   └── test_api.py             # API endpoint tests
+│   ├── conftest.py                    # Pytest fixtures and configuration
+│   ├── test_network.py                # Neural network unit tests
+│   ├── test_model_persistence.py      # Model persistence tests
+│   └── test_api.py                    # API endpoint tests
 ├── docs/
 │   ├── API_DOCUMENTATION.md           # Complete REST API docs
 │   ├── WEBSOCKET_API_DOCUMENTATION.md # WebSocket events & Angular guide
 │   └── README_ORIGINAL.md             # Original project documentation
-├── models/                     # Saved trained networks (created on first save)
+├── models/                             # Saved trained networks
+│   └── networks.db                    # SQLite database
 ├── data/
-│   └── mnist.pkl.gz           # MNIST dataset
-├── pytest.ini                  # Pytest configuration
-├── run_tests.py                # Simple test runner script
+│   └── mnist.pkl.gz                   # MNIST dataset
+├── pytest.ini                         # Pytest configuration
+├── run_tests.py                       # Simple test runner script
 ├── Dockerfile                  # Docker container configuration
 ├── docker-compose.yml          # Docker Compose setup
 ├── railway.json                # Railway deployment configuration
 ├── requirements.txt            # Python dependencies
 └── README.md                   # This file
 ```
+
+## Deployment
+
+### Railway Deployment
+
+This application is configured for easy deployment on Railway.
+
+**⚠️ Important: Volume Required for Data Persistence**
+
+Railway containers are ephemeral. To persist your SQLite database across deployments:
+
+1. **Add a Railway Volume**:
+   - Go to your Railway project dashboard
+   - Select your service → **Variables** tab
+   - Scroll to **Volumes** → Click **"New Volume"**
+   - Set **Mount Path**: `/app/models`
+   - Click **Add**
+
+2. **Deploy**:
+   ```bash
+   railway up
+   ```
+   Or connect your GitHub repo for automatic deployments.
+
+3. **Verify**: Train a network, deploy again - network should still exist!
+
+**Without a volume**, your database will be deleted on every deployment.
+
+See [RAILWAY.md](./RAILWAY.md) and [docs/RAILWAY_DEPLOYMENT.md](./docs/RAILWAY_DEPLOYMENT.md) for detailed instructions.
+
+### Docker Deployment
+
+Run locally with Docker:
+
+```bash
+# Build and run with Docker Compose
+docker-compose up --build
+
+# Access at http://localhost:8000
+```
+
+The `model_data` volume persists your database across container restarts.
 
 ## Testing
 

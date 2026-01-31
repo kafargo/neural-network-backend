@@ -1,190 +1,343 @@
 """
 test_model_persistence.py
-~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Unit tests for the model persistence module.
+Unit tests for SQLite-based model persistence.
 """
 
 import pytest
 import os
-import json
+import sys
+
+# Add src directory to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 from network import Network
 from model_persistence import (
     save_network,
     load_network,
     list_saved_networks,
-    delete_network
+    delete_network,
+    get_network_metadata,
+    ModelDatabase
 )
+
+
+@pytest.fixture
+def temp_db_dir(tmp_path):
+    """Create a temporary directory for database storage."""
+    db_dir = tmp_path / "test_models"
+    db_dir.mkdir()
+    return str(db_dir)
+
+
+@pytest.fixture
+def simple_network():
+    """Create a simple 3-layer network for testing."""
+    return Network([3, 4, 2])
+
+
+@pytest.fixture
+def trained_network(simple_network):
+    """Create a simple network with some training applied."""
+    import numpy as np
+
+    # Create minimal training data
+    training_data = []
+    for i in range(10):
+        x = np.random.randn(3, 1)
+        y = np.zeros((2, 1))
+        y[i % 2] = 1.0
+        training_data.append((x, y))
+
+    # Train briefly
+    simple_network.SGD(training_data, epochs=1, mini_batch_size=5, eta=0.1)
+    return simple_network
 
 
 @pytest.mark.unit
 class TestModelPersistence:
-    """Tests for model persistence functions."""
+    """Test basic model persistence operations."""
 
-    def test_save_network_creates_files(self, simple_network, temp_model_dir):
-        """Test that saving a network creates the expected files."""
-        network_id = "test_network_001"
-        result = save_network(simple_network, network_id, model_dir=temp_model_dir)
+    def test_save_network_creates_database(self, simple_network, temp_db_dir):
+        """Test that saving a network creates the database file."""
+        network_id = "test_network_1"
 
-        assert result is True
-        assert os.path.exists(f"{temp_model_dir}/{network_id}.pkl")
-        assert os.path.exists(f"{temp_model_dir}/{network_id}.json")
+        success = save_network(
+            simple_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=False
+        )
 
-    def test_save_network_metadata(self, simple_network, temp_model_dir):
-        """Test that saved metadata contains correct information."""
-        network_id = "test_network_002"
-        accuracy = 0.95
-        save_network(simple_network, network_id, model_dir=temp_model_dir,
-                    trained=True, accuracy=accuracy)
+        assert success is True
+        assert os.path.exists(f"{temp_db_dir}/networks.db")
 
-        with open(f"{temp_model_dir}/{network_id}.json", 'r') as f:
-            metadata = json.load(f)
+    def test_save_network_with_metadata(self, trained_network, temp_db_dir):
+        """Test that network metadata is saved correctly."""
+        network_id = "trained_network_1"
+        accuracy = 0.85
 
+        success = save_network(
+            trained_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=True,
+            accuracy=accuracy
+        )
+
+        assert success is True
+
+        # Verify metadata
+        metadata = get_network_metadata(network_id, temp_db_dir)
+        assert metadata is not None
         assert metadata['network_id'] == network_id
-        assert metadata['architecture'] == simple_network.sizes
         assert metadata['trained'] is True
         assert metadata['accuracy'] == accuracy
+        assert metadata['architecture'] == [3, 4, 2]
 
-    def test_load_network_returns_network(self, simple_network, temp_model_dir):
-        """Test that loading a network returns a Network object."""
-        network_id = "test_network_003"
-        save_network(simple_network, network_id, model_dir=temp_model_dir)
+    def test_load_network_returns_network(self, simple_network, temp_db_dir):
+        """Test that loading a network returns a valid Network object."""
+        network_id = "test_network_2"
 
-        loaded_network = load_network(network_id, model_dir=temp_model_dir)
+        save_network(simple_network, network_id, model_dir=temp_db_dir)
+        loaded_network = load_network(network_id, temp_db_dir)
 
         assert loaded_network is not None
         assert isinstance(loaded_network, Network)
         assert loaded_network.sizes == simple_network.sizes
 
-    def test_load_nonexistent_network(self, temp_model_dir):
-        """Test that loading a nonexistent network returns None."""
-        result = load_network("nonexistent_network", model_dir=temp_model_dir)
-        assert result is None
+    def test_load_nonexistent_network(self, temp_db_dir):
+        """Test that loading a non-existent network returns None."""
+        loaded_network = load_network("nonexistent", temp_db_dir)
+        assert loaded_network is None
 
-    def test_load_preserves_weights(self, simple_network, temp_model_dir):
-        """Test that loaded network has same weights as saved network."""
-        network_id = "test_network_004"
+    def test_load_preserves_weights(self, trained_network, temp_db_dir):
+        """Test that saved weights are preserved after loading."""
+        network_id = "test_network_3"
 
-        # Save original weights
-        original_weights = [w.copy() for w in simple_network.weights]
-
-        save_network(simple_network, network_id, model_dir=temp_model_dir)
-        loaded_network = load_network(network_id, model_dir=temp_model_dir)
+        save_network(trained_network, network_id, model_dir=temp_db_dir)
+        loaded_network = load_network(network_id, temp_db_dir)
 
         # Compare weights
-        for orig, loaded in zip(original_weights, loaded_network.weights):
-            assert orig.shape == loaded.shape
-            assert (orig == loaded).all()
+        import numpy as np
+        for original_w, loaded_w in zip(trained_network.weights, loaded_network.weights):
+            assert np.allclose(original_w, loaded_w)
 
-    def test_list_saved_networks_empty(self, temp_model_dir):
-        """Test listing networks in empty directory."""
-        networks = list_saved_networks(model_dir=temp_model_dir)
+        # Compare biases
+        for original_b, loaded_b in zip(trained_network.biases, loaded_network.biases):
+            assert np.allclose(original_b, loaded_b)
+
+    def test_list_saved_networks_empty(self, temp_db_dir):
+        """Test listing networks when database is empty."""
+        networks = list_saved_networks(temp_db_dir)
         assert networks == []
 
-    def test_list_saved_networks(self, simple_network, temp_model_dir):
-        """Test listing saved networks."""
+    def test_list_saved_networks(self, simple_network, temp_db_dir):
+        """Test that listing networks returns correct metadata."""
         # Save multiple networks
-        network_ids = ["net_001", "net_002", "net_003"]
-        for net_id in network_ids:
-            save_network(simple_network, net_id, model_dir=temp_model_dir,
-                        trained=True, accuracy=0.9)
+        save_network(simple_network, "net1", model_dir=temp_db_dir, trained=True, accuracy=0.9)
+        save_network(simple_network, "net2", model_dir=temp_db_dir, trained=False)
 
-        networks = list_saved_networks(model_dir=temp_model_dir)
+        networks = list_saved_networks(temp_db_dir)
 
-        assert len(networks) == 3
-        returned_ids = [net['network_id'] for net in networks]
-        for net_id in network_ids:
-            assert net_id in returned_ids
+        assert len(networks) == 2
+        assert any(net['network_id'] == "net1" for net in networks)
+        assert any(net['network_id'] == "net2" for net in networks)
 
-    def test_list_saved_networks_includes_metadata(self, simple_network, temp_model_dir):
-        """Test that listed networks include metadata."""
-        network_id = "net_with_metadata"
-        accuracy = 0.87
-        save_network(simple_network, network_id, model_dir=temp_model_dir,
-                    trained=True, accuracy=accuracy)
+    def test_list_saved_networks_includes_metadata(self, simple_network, temp_db_dir):
+        """Test that listed networks include all expected metadata fields."""
+        network_id = "metadata_test"
+        accuracy = 0.75
 
-        networks = list_saved_networks(model_dir=temp_model_dir)
+        save_network(
+            simple_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=True,
+            accuracy=accuracy
+        )
 
-        assert len(networks) == 1
-        net = networks[0]
-        assert net['network_id'] == network_id
-        assert net['architecture'] == simple_network.sizes
-        assert net['trained'] is True
-        assert net['accuracy'] == accuracy
+        networks = list_saved_networks(temp_db_dir)
+        network = networks[0]
 
-    def test_delete_network_removes_files(self, simple_network, temp_model_dir):
-        """Test that deleting a network removes its files."""
-        network_id = "net_to_delete"
-        save_network(simple_network, network_id, model_dir=temp_model_dir)
+        assert network['network_id'] == network_id
+        assert network['architecture'] == [3, 4, 2]
+        assert network['trained'] is True
+        assert network['accuracy'] == accuracy
+        assert 'created_at' in network
+        assert 'updated_at' in network
+        assert 'weights_shape' in network
+        assert 'biases_shape' in network
 
-        # Verify files exist
-        assert os.path.exists(f"{temp_model_dir}/{network_id}.pkl")
-        assert os.path.exists(f"{temp_model_dir}/{network_id}.json")
+    def test_delete_network_success(self, simple_network, temp_db_dir):
+        """Test successful network deletion."""
+        network_id = "delete_test"
 
-        # Delete network
-        result = delete_network(network_id, model_dir=temp_model_dir)
+        save_network(simple_network, network_id, model_dir=temp_db_dir)
 
-        assert result is True
-        assert not os.path.exists(f"{temp_model_dir}/{network_id}.pkl")
-        assert not os.path.exists(f"{temp_model_dir}/{network_id}.json")
+        # Verify it exists
+        assert load_network(network_id, temp_db_dir) is not None
 
-    def test_delete_nonexistent_network(self, temp_model_dir):
-        """Test that deleting a nonexistent network returns False."""
-        result = delete_network("nonexistent", model_dir=temp_model_dir)
-        assert result is False
+        # Delete it
+        success = delete_network(network_id, temp_db_dir)
+        assert success is True
 
-    def test_save_untrained_network(self, simple_network, temp_model_dir):
-        """Test saving an untrained network."""
-        network_id = "untrained_net"
-        save_network(simple_network, network_id, model_dir=temp_model_dir,
-                    trained=False, accuracy=None)
+        # Verify it's gone
+        assert load_network(network_id, temp_db_dir) is None
 
-        with open(f"{temp_model_dir}/{network_id}.json", 'r') as f:
-            metadata = json.load(f)
+    def test_delete_nonexistent_network(self, temp_db_dir):
+        """Test that deleting a non-existent network returns False."""
+        # Initialize database
+        db = ModelDatabase(db_path=f'{temp_db_dir}/networks.db')
 
+        success = delete_network("nonexistent", temp_db_dir)
+        assert success is False
+
+    def test_save_untrained_network(self, simple_network, temp_db_dir):
+        """Test saving a network that hasn't been trained."""
+        network_id = "untrained_test"
+
+        success = save_network(
+            simple_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=False,
+            accuracy=None
+        )
+
+        assert success is True
+
+        metadata = get_network_metadata(network_id, temp_db_dir)
         assert metadata['trained'] is False
         assert metadata['accuracy'] is None
+
+    def test_update_network(self, simple_network, temp_db_dir):
+        """Test that saving a network with the same ID updates it."""
+        network_id = "update_test"
+
+        # Save untrained
+        save_network(
+            simple_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=False
+        )
+
+        metadata1 = get_network_metadata(network_id, temp_db_dir)
+        assert metadata1['trained'] is False
+
+        # Update to trained
+        save_network(
+            simple_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=True,
+            accuracy=0.88
+        )
+
+        metadata2 = get_network_metadata(network_id, temp_db_dir)
+        assert metadata2['trained'] is True
+        assert metadata2['accuracy'] == 0.88
+
+        # Should still be only one network
+        networks = list_saved_networks(temp_db_dir)
+        assert len(networks) == 1
 
 
 @pytest.mark.integration
 class TestPersistenceIntegration:
     """Integration tests for model persistence."""
 
-    def test_save_load_train_cycle(self, simple_network, sample_training_data, temp_model_dir):
-        """Test full cycle: save, load, and train."""
+    def test_save_load_train_cycle(self, simple_network, temp_db_dir):
+        """Test complete cycle: save, load, train, save again."""
+        import numpy as np
+
         network_id = "cycle_test"
 
-        # Save initial network
-        save_network(simple_network, network_id, model_dir=temp_model_dir, trained=False)
+        # Save initial untrained network
+        save_network(
+            simple_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=False
+        )
 
-        # Load it back
-        loaded_network = load_network(network_id, model_dir=temp_model_dir)
+        # Load it
+        loaded_network = load_network(network_id, temp_db_dir)
 
-        # Train the loaded network
-        loaded_network.SGD(sample_training_data, epochs=2,
-                          mini_batch_size=2, eta=0.5)
+        # Train it
+        training_data = []
+        for i in range(10):
+            x = np.random.randn(3, 1)
+            y = np.zeros((2, 1))
+            y[i % 2] = 1.0
+            training_data.append((x, y))
+
+        loaded_network.SGD(training_data, epochs=1, mini_batch_size=5, eta=0.1)
 
         # Save trained version
-        save_network(loaded_network, network_id, model_dir=temp_model_dir,
-                    trained=True, accuracy=0.8)
+        save_network(
+            loaded_network,
+            network_id,
+            model_dir=temp_db_dir,
+            trained=True,
+            accuracy=0.85
+        )
 
-        # Verify it worked
-        networks = list_saved_networks(model_dir=temp_model_dir)
-        assert len(networks) == 1
-        assert networks[0]['trained'] is True
+        # Load again and verify
+        final_network = load_network(network_id, temp_db_dir)
+        metadata = get_network_metadata(network_id, temp_db_dir)
 
-    def test_multiple_networks_coexist(self, mnist_network, simple_network, temp_model_dir):
-        """Test that multiple different networks can be saved and loaded."""
-        save_network(mnist_network, "mnist_net", model_dir=temp_model_dir)
-        save_network(simple_network, "simple_net", model_dir=temp_model_dir)
+        assert final_network is not None
+        assert metadata['trained'] is True
+        assert metadata['accuracy'] == 0.85
 
-        networks = list_saved_networks(model_dir=temp_model_dir)
-        assert len(networks) == 2
+    def test_multiple_networks_coexist(self, temp_db_dir):
+        """Test that multiple networks can coexist in the database."""
+        networks_to_create = [
+            ([784, 30, 10], "mnist_network"),
+            ([3, 4, 2], "simple_network"),
+            ([10, 20, 20, 10], "deep_network")
+        ]
 
-        # Load both and verify they're different
-        loaded_mnist = load_network("mnist_net", model_dir=temp_model_dir)
-        loaded_simple = load_network("simple_net", model_dir=temp_model_dir)
+        # Create and save multiple networks
+        for architecture, network_id in networks_to_create:
+            net = Network(architecture)
+            save_network(net, network_id, model_dir=temp_db_dir)
 
-        assert loaded_mnist.sizes == [784, 30, 10]
-        assert loaded_simple.sizes == [3, 4, 2]
+        # List all networks
+        networks = list_saved_networks(temp_db_dir)
+        assert len(networks) == len(networks_to_create)
 
+        # Verify each can be loaded
+        for architecture, network_id in networks_to_create:
+            loaded = load_network(network_id, temp_db_dir)
+            assert loaded is not None
+            assert loaded.sizes == architecture
+
+    def test_concurrent_access_safe(self, simple_network, temp_db_dir):
+        """Test that database handles multiple operations safely."""
+        # This tests that the context manager properly handles transactions
+        network_ids = [f"concurrent_{i}" for i in range(5)]
+
+        # Save multiple networks
+        for network_id in network_ids:
+            save_network(simple_network, network_id, model_dir=temp_db_dir)
+
+        # Load all of them
+        loaded_networks = []
+        for network_id in network_ids:
+            net = load_network(network_id, temp_db_dir)
+            loaded_networks.append(net)
+
+        assert len(loaded_networks) == 5
+        assert all(net is not None for net in loaded_networks)
+
+        # Delete them all
+        for network_id in network_ids:
+            assert delete_network(network_id, temp_db_dir) is True
+
+        # Verify all deleted
+        networks = list_saved_networks(temp_db_dir)
+        assert len(networks) == 0

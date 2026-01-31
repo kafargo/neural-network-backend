@@ -22,6 +22,8 @@ applyTo: '**/*.py'
 - For libraries or external dependencies, mention their usage and purpose in comments.
 - Use consistent naming conventions and follow language-specific best practices.
 - Write concise, efficient, and idiomatic code that is also easily understandable.
+- After making any changes, all test need to be run to confirm everything is working
+- If new functionality is added, or existing code is changed, test should be updated/created accordingly
 
 ## Code Style and Formatting
 

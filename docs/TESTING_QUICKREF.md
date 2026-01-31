@@ -24,10 +24,10 @@ python run_tests.py help
 ## Test Files
 
 - `tests/test_network.py` - 16 neural network unit tests
-- `tests/test_model_persistence.py` - 13 model save/load tests  
+- `tests/test_model_persistence.py` - 15 model persistence tests (SQLite)
 - `tests/test_api.py` - 25 API endpoint tests
 
-**Total: 54 tests**
+**Total: 56 tests**
 
 ## Run Specific Tests
 
