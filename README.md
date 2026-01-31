@@ -1,4 +1,4 @@
-# Neural Network Backend System
+# Neural Network Backend
 
 A clean, focused backend API for creating and training neural networks on MNIST digit recognition. Built with Flask and Flask-SocketIO to provide real-time training updates to frontend applications.
 
