@@ -195,28 +195,43 @@ logger.info("Cleared stale training jobs")
 
 def cleanup_old_networks_task() -> None:
     """
-    Background task that runs every 24 hours to:
-    - Delete networks older than 2 days
+    Background task that runs immediately on startup, then every 24 hours to:
+    - Delete networks older than 2 days from the database
+    - Sync in-memory networks with the database
     - Remove completed/failed training jobs from memory
     """
     while True:
         try:
-            gevent.sleep(86400)  # Wait 24 hours
-
             # Clean up old networks from database
             logger.info("Starting automatic cleanup of old networks...")
             deleted_count = delete_old_networks(days=2)
 
             if deleted_count > 0:
                 logger.info(f"Cleanup completed: deleted {deleted_count} network(s)")
+
+                # Sync in-memory networks with database
+                # Remove any networks from memory that no longer exist in database
+                saved_ids = {net['network_id'] for net in list_saved_networks()}
+                networks_to_remove = [
+                    nid for nid in active_networks.keys()
+                    if nid not in saved_ids
+                ]
+                for nid in networks_to_remove:
+                    del active_networks[nid]
+                    logger.info(f"Removed network {nid} from memory (deleted from database)")
             else:
                 logger.debug("Cleanup completed: no old networks found")
 
             # Clean up completed/failed training jobs from memory
             cleanup_finished_training_jobs()
 
+            # Wait 24 hours before next cleanup
+            gevent.sleep(86400)
+
         except Exception as e:
             logger.exception(f"Error during network cleanup: {e}")
+            # Wait a bit before retrying on error (don't spam)
+            gevent.sleep(3600)  # 1 hour
             continue
 
 
@@ -438,6 +453,12 @@ def train_network_task(
         })
         gevent.sleep(0)
 
+        # Clean up the job after a short delay (allow clients to fetch final status)
+        gevent.sleep(60)  # Wait 1 minute
+        if job_id in training_jobs:
+            del training_jobs[job_id]
+            logger.debug(f"Cleaned up completed training job {job_id}")
+
     except Exception as e:
         logger.exception(f"Training failed for job {job_id}: {e}")
 
@@ -451,6 +472,12 @@ def train_network_task(
             'error': str(e)
         })
         gevent.sleep(0)
+
+        # Clean up failed job after a short delay
+        gevent.sleep(60)  # Wait 1 minute
+        if job_id in training_jobs:
+            del training_jobs[job_id]
+            logger.debug(f"Cleaned up failed training job {job_id}")
 
 @app.route('/api/training/<job_id>', methods=['GET'])
 def get_training_status(job_id: str):
