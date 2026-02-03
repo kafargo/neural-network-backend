@@ -2,8 +2,7 @@
 model_persistence.py
 ~~~~~~~~~~~~~~~~~~~~
 
-SQLite-based persistence for neural network models.
-Provides reliable, performant storage with ACID transaction guarantees.
+Save and load neural networks to/from a SQLite database.
 """
 
 import sqlite3
@@ -11,48 +10,18 @@ import pickle
 import json
 import os
 import logging
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
-import numpy as np
 
-# Configure module logger
 logger = logging.getLogger(__name__)
 
 
-class NetworkEncoder(json.JSONEncoder):
-    """Custom JSON encoder that handles numpy arrays."""
-
-    def default(self, obj: Any) -> Any:
-        """
-        Convert numpy arrays to lists for JSON serialization.
-
-        Args:
-            obj: Object to serialize
-
-        Returns:
-            JSON-serializable representation
-        """
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super().default(obj)
-
 
 class ModelDatabase:
-    """
-    Manages SQLite database for neural network model persistence.
-
-    The database stores:
-    - Network metadata (architecture, training status, accuracy)
-    - Serialized network objects as binary blobs
-    """
+    """Handles saving and loading neural networks to/from SQLite."""
 
     def __init__(self, db_path: str = 'models/networks.db'):
-        """
-        Initialize the database connection.
-
-        Args:
-            db_path: Path to the SQLite database file
-        """
+        """Initialize the database at the given path."""
         self.db_path = db_path
         self._ensure_directory()
         self._initialize_schema()
@@ -64,15 +33,10 @@ class ModelDatabase:
             os.makedirs(db_dir)
 
     @contextmanager
-    def _get_connection(self) -> Generator[sqlite3.Connection, None, None]:
-        """
-        Context manager for database connections.
-
-        Yields:
-            sqlite3.Connection: Database connection
-        """
+    def _get_connection(self):
+        """Context manager that provides a database connection."""
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Enable column access by name
+        conn.row_factory = sqlite3.Row  # Access columns by name
         try:
             yield conn
             conn.commit()
@@ -83,9 +47,11 @@ class ModelDatabase:
             conn.close()
 
     def _initialize_schema(self) -> None:
-        """Create the database schema if it doesn't exist."""
+        """Create the database tables and indexes if they don't exist."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+
+            # Main table for storing networks
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS networks (
                     network_id TEXT PRIMARY KEY,
@@ -98,7 +64,7 @@ class ModelDatabase:
                 )
             ''')
 
-            # Create index for common queries
+            # Indexes for faster queries
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_trained 
                 ON networks(trained)
@@ -126,22 +92,16 @@ class ModelDatabase:
             accuracy: Training accuracy (0.0 to 1.0)
 
         Returns:
-            bool: True if successful, False otherwise
-
-        Raises:
-            ValueError: If accuracy is out of valid range
+            True if successful
         """
-        # Validate inputs
         if accuracy is not None and not 0.0 <= accuracy <= 1.0:
-            raise ValueError(
-                f"Accuracy must be between 0.0 and 1.0, got {accuracy}"
-            )
+            raise ValueError(f"Accuracy must be between 0.0 and 1.0, got {accuracy}")
 
-        # Serialize the network object using pickle
+        # Serialize network object to bytes
         network_data = pickle.dumps(network)
 
-        # Serialize architecture as JSON for queryability
-        architecture_json = json.dumps(network.sizes, cls=NetworkEncoder)
+        # Store architecture as JSON string (e.g., "[784, 30, 10]")
+        architecture_json = json.dumps(network.sizes)
 
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -168,9 +128,6 @@ class ModelDatabase:
         """
         Load a network from the database.
 
-        Args:
-            network_id: Unique identifier of the network
-
         Returns:
             Network object or None if not found
         """
@@ -186,28 +143,17 @@ class ModelDatabase:
                 logger.warning(f"Network '{network_id}' not found")
                 return None
 
-            # Deserialize the network object
             network = pickle.loads(row['network_data'])
             logger.info(f"Loaded network '{network_id}'")
             return network
 
     def list_networks_from_db(self) -> List[Dict[str, Any]]:
-        """
-        List all networks with metadata.
-
-        Returns:
-            List of network metadata dictionaries
-        """
+        """Return a list of all networks with their metadata."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT 
-                    network_id,
-                    architecture,
-                    trained,
-                    accuracy,
-                    created_at,
-                    updated_at
+                SELECT network_id, architecture, trained, accuracy,
+                       created_at, updated_at
                 FROM networks
                 ORDER BY created_at DESC
             ''')
@@ -216,7 +162,8 @@ class ModelDatabase:
             for row in cursor.fetchall():
                 architecture = json.loads(row['architecture'])
 
-                # Calculate weight and bias shapes from architecture
+                # Calculate weight/bias shapes from architecture
+                # For [784, 30, 10]: weights are (30x784) and (10x30)
                 weights_shape = [
                     [architecture[i+1], architecture[i]]
                     for i in range(len(architecture) - 1)
@@ -244,11 +191,8 @@ class ModelDatabase:
         """
         Delete a network from the database.
 
-        Args:
-            network_id: Unique identifier of the network
-
         Returns:
-            bool: True if deleted, False if not found
+            True if deleted, False if not found
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -261,23 +205,15 @@ class ModelDatabase:
             if deleted:
                 logger.info(f"Deleted network '{network_id}'")
             else:
-                logger.warning(
-                    f"Could not delete network '{network_id}': not found"
-                )
+                logger.warning(f"Network '{network_id}' not found for deletion")
             return deleted
 
     def delete_old_networks_from_db(self, days: int = 2) -> int:
         """
         Delete networks older than the specified number of days.
 
-        Args:
-            days: Number of days (networks older than this will be deleted)
-
         Returns:
-            int: Number of networks deleted
-
-        Raises:
-            ValueError: If days is negative
+            Number of networks deleted
         """
         if days < 0:
             raise ValueError(f"Days must be non-negative, got {days}")
@@ -285,51 +221,33 @@ class ModelDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
-            # First, get the list of networks to be deleted for logging
+            # Log which networks will be deleted
             cursor.execute('''
-                SELECT network_id, created_at 
-                FROM networks 
+                SELECT network_id, created_at FROM networks 
                 WHERE datetime(created_at) <= datetime('now', '-' || ? || ' days')
             ''', (days,))
 
-            networks_to_delete = cursor.fetchall()
+            to_delete = cursor.fetchall()
+            if to_delete:
+                logger.info(f"Deleting {len(to_delete)} network(s) older than {days} day(s)")
+                for row in to_delete:
+                    logger.debug(f"  - {row['network_id']} (created: {row['created_at']})")
 
-            if networks_to_delete:
-                logger.info(
-                    f"Found {len(networks_to_delete)} network(s) older than "
-                    f"{days} day(s) to delete"
-                )
-                for row in networks_to_delete:
-                    logger.debug(
-                        f"  - {row['network_id']} (created: {row['created_at']})"
-                    )
-
-            # Now delete them
+            # Delete the old networks
             cursor.execute('''
                 DELETE FROM networks 
                 WHERE datetime(created_at) <= datetime('now', '-' || ? || ' days')
             ''', (days,))
 
             deleted_count = cursor.rowcount
-
             if deleted_count > 0:
-                logger.info(
-                    f"Successfully deleted {deleted_count} old network(s)"
-                )
-            else:
-                logger.debug("No old networks to delete")
+                logger.info(f"Deleted {deleted_count} old network(s)")
 
             return deleted_count
 
-    def get_network_metadata_from_db(
-        self,
-        network_id: str
-    ) -> Optional[Dict[str, Any]]:
+    def get_network_metadata_from_db(self, network_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get network metadata without loading the full object.
-
-        Args:
-            network_id: Unique identifier of the network
+        Get network metadata without loading the full network object.
 
         Returns:
             Metadata dictionary or None if not found
@@ -337,29 +255,19 @@ class ModelDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT 
-                    network_id,
-                    architecture,
-                    trained,
-                    accuracy,
-                    created_at,
-                    updated_at
-                FROM networks
-                WHERE network_id = ?
+                SELECT network_id, architecture, trained, accuracy,
+                       created_at, updated_at
+                FROM networks WHERE network_id = ?
             ''', (network_id,))
 
             row = cursor.fetchone()
             if row is None:
-                logger.warning(
-                    f"Metadata for network '{network_id}' not found"
-                )
+                logger.warning(f"Metadata for network '{network_id}' not found")
                 return None
-
-            architecture = json.loads(row['architecture'])
 
             return {
                 'network_id': row['network_id'],
-                'architecture': architecture,
+                'architecture': json.loads(row['architecture']),
                 'trained': bool(row['trained']),
                 'accuracy': row['accuracy'],
                 'created_at': row['created_at'],
@@ -367,17 +275,16 @@ class ModelDatabase:
             }
 
 
-# Global database instance
-_db = None
+# ============================================================================
+# MODULE-LEVEL FUNCTIONS
+# ============================================================================
+
+# Global database instance (singleton pattern)
+_db: Optional[ModelDatabase] = None
 
 
 def _get_db() -> ModelDatabase:
-    """
-    Get or create the global database instance.
-
-    Returns:
-        ModelDatabase: The global database instance
-    """
+    """Get or create the global database instance."""
     global _db
     if _db is None:
         _db = ModelDatabase()
@@ -429,17 +336,13 @@ def save_network(
         logger.error(f"Validation error saving network '{network_id}': {e}")
         return False
     except (AttributeError, pickle.PicklingError) as e:
-        logger.error(
-            f"Serialization error saving network '{network_id}': {e}"
-        )
+        logger.error(f"Serialization error saving network '{network_id}': {e}")
         return False
     except sqlite3.Error as e:
         logger.error(f"Database error saving network '{network_id}': {e}")
         return False
     except Exception as e:
-        logger.exception(
-            f"Unexpected error saving network '{network_id}': {e}"
-        )
+        logger.exception(f"Unexpected error saving network '{network_id}': {e}")
         return False
 
 
@@ -473,25 +376,17 @@ def load_network(network_id: str, model_dir: str = 'models'):
         return db.load_network_from_db(network_id)
 
     except pickle.UnpicklingError as e:
-        logger.error(
-            f"Deserialization error loading network '{network_id}': {e}"
-        )
+        logger.error(f"Deserialization error loading network '{network_id}': {e}")
         return None
     except sqlite3.Error as e:
-        logger.error(
-            f"Database error loading network '{network_id}': {e}"
-        )
+        logger.error(f"Database error loading network '{network_id}': {e}")
         return None
     except Exception as e:
-        logger.exception(
-            f"Unexpected error loading network '{network_id}': {e}"
-        )
+        logger.exception(f"Unexpected error loading network '{network_id}': {e}")
         return None
 
 
-def list_saved_networks(
-    model_dir: str = 'models'
-) -> List[Dict[str, Any]]:
+def list_saved_networks(model_dir: str = 'models') -> List[Dict[str, Any]]:
     """
     List all saved networks with their metadata.
 
@@ -558,9 +453,7 @@ def delete_network(network_id: str, model_dir: str = 'models') -> bool:
         logger.error(f"Database error deleting network '{network_id}': {e}")
         return False
     except Exception as e:
-        logger.exception(
-            f"Unexpected error deleting network '{network_id}': {e}"
-        )
+        logger.exception(f"Unexpected error deleting network '{network_id}': {e}")
         return False
 
 
@@ -597,19 +490,13 @@ def get_network_metadata(
         return db.get_network_metadata_from_db(network_id)
 
     except sqlite3.Error as e:
-        logger.error(
-            f"Database error getting metadata for '{network_id}': {e}"
-        )
+        logger.error(f"Database error getting metadata for '{network_id}': {e}")
         return None
     except json.JSONDecodeError as e:
-        logger.error(
-            f"JSON decode error getting metadata for '{network_id}': {e}"
-        )
+        logger.error(f"JSON decode error getting metadata for '{network_id}': {e}")
         return None
     except Exception as e:
-        logger.exception(
-            f"Unexpected error getting metadata for '{network_id}': {e}"
-        )
+        logger.exception(f"Unexpected error getting metadata for '{network_id}': {e}")
         return None
 
 
@@ -617,22 +504,14 @@ def delete_old_networks(days: int = 2, model_dir: str = 'models') -> int:
     """
     Delete networks older than the specified number of days.
 
-    This function is useful for automatic cleanup of old networks to
-    prevent database bloat. It can be called manually or scheduled to
-    run periodically.
-
     Args:
-        days: Number of days (networks older than this will be deleted)
+        days: Networks older than this will be deleted
         model_dir: Directory where the database is stored
 
     Returns:
         int: Number of networks deleted, or -1 if an error occurred
 
-    Raises:
-        ValueError: If days is negative
-
     Example:
-        >>> # Delete networks older than 2 days
         >>> deleted_count = delete_old_networks(days=2)
         >>> print(f"Deleted {deleted_count} old networks")
     """
@@ -649,7 +528,6 @@ def delete_old_networks(days: int = 2, model_dir: str = 'models') -> int:
         return db.delete_old_networks_from_db(days)
 
     except ValueError:
-        # Re-raise validation errors
         raise
     except sqlite3.Error as e:
         logger.error(f"Database error deleting old networks: {e}")
