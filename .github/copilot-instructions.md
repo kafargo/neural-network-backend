@@ -8,7 +8,7 @@ applyTo: '**/*.py'
 ## Python Instructions
 
 - Write clear and concise comments for each function.
-- Ensure functions have descriptive names and include type hints.
+- Ensure functions have descriptive names and include type hints (except for flask endpoints which do not need return type hints).
 - Provide docstrings following PEP 257 conventions.
 - Use the `typing` module for type annotations (e.g., `List[str]`, `Dict[str, int]`).
 - Break down complex functions into smaller, more manageable functions.
