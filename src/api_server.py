@@ -305,11 +305,22 @@ start_cleanup_task()
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    """Return server status and statistics."""
+    """
+    Return server status and statistics.
+
+    Returns counts of active networks and training jobs that are
+    currently in progress (status='pending' or 'training').
+    """
+    # Count only jobs that are actively training or pending
+    active_training = sum(
+        1 for job in training_jobs.values()
+        if job.get('status') in ('pending', 'training')
+    )
+
     return jsonify({
         'status': 'online',
         'active_networks': len(active_networks),
-        'training_jobs': len(training_jobs)
+        'training_jobs': active_training
     }), 200
 
 @app.route('/api/networks', methods=['POST'])
@@ -399,8 +410,9 @@ def train_network(network_id: str):
     }
 
     logger.info(
-        f"Starting training job {job_id} for network {network_id}: "
-        f"epochs={epochs}, batch_size={mini_batch_size}, lr={learning_rate}"
+        f"Created training job {job_id} for network {network_id}: "
+        f"epochs={epochs}, batch_size={mini_batch_size}, lr={learning_rate}. "
+        f"Active training jobs: {len(training_jobs)}"
     )
 
     # Run training in background so we can return immediately

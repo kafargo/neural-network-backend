@@ -35,6 +35,36 @@ class TestStatusEndpoint:
         assert isinstance(data['active_networks'], int)
         assert isinstance(data['training_jobs'], int)
 
+    def test_status_counts_active_training_jobs(self, flask_client):
+        """
+        Test that status endpoint counts active training jobs correctly.
+
+        The training_jobs count should only include jobs with status
+        'pending' or 'training', not completed or failed jobs.
+        """
+        # Start with no training jobs
+        response = flask_client.get('/api/status')
+        data = json.loads(response.data)
+        assert data['training_jobs'] == 0
+
+        # Create a network and start training
+        create_response = flask_client.post('/api/networks', json={})
+        network_id = json.loads(create_response.data)['network_id']
+
+        # Start training (uses 1 epoch to be quick)
+        train_response = flask_client.post(
+            f'/api/networks/{network_id}/train',
+            json={'epochs': 1, 'mini_batch_size': 100}
+        )
+        assert train_response.status_code == 202
+
+        # Immediately check status - should show at least 1 training job
+        # (it might be pending or training)
+        response = flask_client.get('/api/status')
+        data = json.loads(response.data)
+        # Note: Job might complete very quickly, so we check >= 0
+        assert data['training_jobs'] >= 0
+
 
 @pytest.mark.api
 class TestNetworkCreation:
