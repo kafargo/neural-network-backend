@@ -212,8 +212,17 @@ class ModelDatabase:
         """
         Delete networks older than the specified number of days.
 
+        Uses explicit UTC timestamps for consistent comparison, since
+        SQLite CURRENT_TIMESTAMP stores in UTC.
+
+        Args:
+            days: Number of days after which networks should be deleted.
+
         Returns:
-            Number of networks deleted
+            Number of networks deleted.
+
+        Raises:
+            ValueError: If days is negative.
         """
         if days < 0:
             raise ValueError(f"Days must be non-negative, got {days}")
@@ -221,27 +230,57 @@ class ModelDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
-            # Log which networks will be deleted
+            # First, get the current UTC time for debugging
+            cursor.execute("SELECT datetime('now') as utc_now")
+            utc_now = cursor.fetchone()['utc_now']
+            logger.info(f"Current UTC time: {utc_now}, deleting networks older than {days} day(s)")
+
+            # Log all networks and their ages for debugging
             cursor.execute('''
-                SELECT network_id, created_at FROM networks 
-                WHERE datetime(created_at) <= datetime('now', '-' || ? || ' days')
+                SELECT network_id, created_at,
+                       ROUND(julianday('now') - julianday(created_at), 2) as age_days
+                FROM networks
+                ORDER BY created_at ASC
+            ''')
+            all_networks = cursor.fetchall()
+
+            if all_networks:
+                logger.info(f"All networks in database ({len(all_networks)} total):")
+                for row in all_networks:
+                    logger.info(
+                        f"  - {row['network_id'][:8]}... "
+                        f"(created: {row['created_at']}, age: {row['age_days']} days)"
+                    )
+
+            # Find networks to delete using julianday for accurate comparison
+            # julianday gives us precise day calculations including fractional days
+            cursor.execute('''
+                SELECT network_id, created_at,
+                       ROUND(julianday('now') - julianday(created_at), 2) as age_days
+                FROM networks 
+                WHERE julianday('now') - julianday(created_at) >= ?
             ''', (days,))
 
             to_delete = cursor.fetchall()
             if to_delete:
-                logger.info(f"Deleting {len(to_delete)} network(s) older than {days} day(s)")
+                logger.info(f"Networks to delete ({len(to_delete)}):")
                 for row in to_delete:
-                    logger.debug(f"  - {row['network_id']} (created: {row['created_at']})")
+                    logger.info(
+                        f"  - {row['network_id']} "
+                        f"(created: {row['created_at']}, age: {row['age_days']} days)"
+                    )
+            else:
+                logger.info(f"No networks older than {days} day(s) found")
 
-            # Delete the old networks
+            # Delete the old networks using the same comparison method
             cursor.execute('''
                 DELETE FROM networks 
-                WHERE datetime(created_at) <= datetime('now', '-' || ? || ' days')
+                WHERE julianday('now') - julianday(created_at) >= ?
             ''', (days,))
 
             deleted_count = cursor.rowcount
             if deleted_count > 0:
-                logger.info(f"Deleted {deleted_count} old network(s)")
+                logger.info(f"Successfully deleted {deleted_count} old network(s)")
 
             return deleted_count
 

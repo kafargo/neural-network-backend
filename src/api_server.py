@@ -55,7 +55,7 @@ def configure_logging() -> None:
     """
     Set up logging based on environment.
 
-    - In production: Show fewer logs (less noise)
+    - In production: Show fewer logs (less noise) but keep important logs
     - In development: Show more detailed logs for debugging
     """
     log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -68,12 +68,15 @@ def configure_logging() -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    # In production, silence noisy third-party logs
+    # In production, silence noisy third-party logs but keep our logs visible
     if is_production:
         for logger_name in ['socketio', 'engineio', 'engineio.server',
                             'socketio.server', 'werkzeug']:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
+        # Keep our logs at INFO level for visibility in production
         logging.getLogger('src').setLevel(logging.INFO)
+        logging.getLogger('src.api_server').setLevel(logging.INFO)
+        logging.getLogger('src.model_persistence').setLevel(logging.INFO)
     else:
         logging.getLogger('socketio').setLevel(logging.INFO)
         logging.getLogger('engineio').setLevel(logging.INFO)
@@ -199,11 +202,20 @@ def cleanup_old_networks_task() -> None:
     - Delete networks older than 2 days from the database
     - Sync in-memory networks with the database
     - Remove completed/failed training jobs from memory
+
+    Note: In production environments where the app may restart frequently,
+    this ensures cleanup runs at least once per startup.
     """
+    logger.info("=" * 60)
+    logger.info("CLEANUP TASK STARTED")
+    logger.info("=" * 60)
+
     while True:
         try:
             # Clean up old networks from database
             logger.info("Starting automatic cleanup of old networks...")
+            logger.info(f"Active networks in memory before cleanup: {len(active_networks)}")
+
             deleted_count = delete_old_networks(days=2)
 
             if deleted_count > 0:
@@ -219,13 +231,18 @@ def cleanup_old_networks_task() -> None:
                 for nid in networks_to_remove:
                     del active_networks[nid]
                     logger.info(f"Removed network {nid} from memory (deleted from database)")
+
+                logger.info(f"Active networks in memory after cleanup: {len(active_networks)}")
+            elif deleted_count == 0:
+                logger.info("Cleanup completed: no old networks found to delete")
             else:
-                logger.debug("Cleanup completed: no old networks found")
+                logger.error("Cleanup returned error code")
 
             # Clean up completed/failed training jobs from memory
             cleanup_finished_training_jobs()
 
             # Wait 24 hours before next cleanup
+            logger.info("Next cleanup scheduled in 24 hours")
             gevent.sleep(86400)
 
         except Exception as e:

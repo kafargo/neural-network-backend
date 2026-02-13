@@ -528,3 +528,54 @@ class TestDeleteOldNetworks:
         assert deleted == 1
         assert db.load_network_from_db("test_network") is None
 
+    def test_delete_old_networks_two_weeks_old(
+        self,
+        simple_network,
+        temp_db_dir
+    ):
+        """
+        Test delete_old_networks with networks that are 14 days old.
+
+        This test simulates the production issue where networks created
+        two weeks ago should be deleted when using the default 2-day threshold.
+        """
+        import sqlite3
+
+        network_id = "two_weeks_old_network"
+        save_network(simple_network, network_id, model_dir=temp_db_dir)
+
+        # Age the network to 14 days old
+        db_path = os.path.join(temp_db_dir, "networks.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE networks 
+            SET created_at = datetime('now', '-14 days')
+            WHERE network_id = ?
+        ''', (network_id,))
+        conn.commit()
+        conn.close()
+
+        # Verify the network age using the same query as delete_old_networks
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT network_id, created_at,
+                   ROUND(julianday('now') - julianday(created_at), 2) as age_days
+            FROM networks
+            WHERE network_id = ?
+        ''', (network_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        # Network should be approximately 14 days old
+        assert row['age_days'] >= 13.9, f"Network age should be ~14 days, got {row['age_days']}"
+
+        # Delete networks older than 2 days (default threshold)
+        deleted_count = delete_old_networks(days=2, model_dir=temp_db_dir)
+
+        # The 14-day-old network should definitely be deleted
+        assert deleted_count == 1
+        assert load_network(network_id, temp_db_dir) is None
+
