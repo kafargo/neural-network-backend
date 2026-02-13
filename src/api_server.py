@@ -312,10 +312,20 @@ def get_status():
     currently in progress (status='pending' or 'training').
     """
     # Count only jobs that are actively training or pending
+    active_statuses = ('pending', 'training')
     active_training = sum(
         1 for job in training_jobs.values()
-        if job.get('status') in ('pending', 'training')
+        if job.get('status') in active_statuses
     )
+
+    # Debug logging to diagnose training jobs count issue
+    # Log when there are any jobs to track
+    if training_jobs:
+        logger.info(
+            f"Status check: {len(training_jobs)} total jobs, "
+            f"{active_training} active. "
+            f"Jobs: {[(jid[:8], j.get('status')) for jid, j in training_jobs.items()]}"
+        )
 
     return jsonify({
         'status': 'online',
@@ -447,6 +457,11 @@ def train_network_task(
 
         training_jobs[job_id]['status'] = 'training'
         training_jobs[job_id]['progress'] = progress
+
+        logger.info(
+            f"Training progress: job {job_id[:8]}, epoch {data['epoch']}/{data['total_epochs']}, "
+            f"accuracy {data['accuracy']:.2%}. Active jobs in dict: {len(training_jobs)}"
+        )
 
         # Send update to connected clients via WebSocket
         socketio.emit('training_update', {
