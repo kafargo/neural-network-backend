@@ -196,6 +196,10 @@ logger.info("Cleared stale training jobs")
 # BACKGROUND TASKS
 # ============================================================================
 
+# Flag to ensure cleanup task only starts once
+_cleanup_task_started = False
+
+
 def cleanup_old_networks_task() -> None:
     """
     Background task that runs immediately on startup, then every 24 hours to:
@@ -273,9 +277,26 @@ def cleanup_finished_training_jobs() -> None:
 
 
 def start_cleanup_task() -> None:
-    """Start the background cleanup task."""
-    logger.info("Starting cleanup task (runs every 24 hours)")
-    socketio.start_background_task(cleanup_old_networks_task)
+    """
+    Start the background cleanup task.
+
+    Uses gevent.spawn() directly instead of socketio.start_background_task()
+    to ensure it works both when running directly and under gunicorn.
+    This function is idempotent - calling it multiple times has no effect.
+    """
+    global _cleanup_task_started
+
+    if _cleanup_task_started:
+        logger.debug("Cleanup task already started, skipping")
+        return
+
+    _cleanup_task_started = True
+    logger.info("Starting cleanup task (runs immediately, then every 24 hours)")
+    gevent.spawn(cleanup_old_networks_task)
+
+
+# Start the cleanup task when module is loaded (works with gunicorn)
+start_cleanup_task()
 
 
 # ============================================================================

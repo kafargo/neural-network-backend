@@ -17,7 +17,7 @@ RUN mkdir -p models
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     FLASK_ENV=production \
-    LOG_LEVEL=WARNING \
+    LOG_LEVEL=INFO \
     PORT=8000
 
 # Expose port
