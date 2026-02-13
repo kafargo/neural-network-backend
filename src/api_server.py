@@ -318,14 +318,16 @@ def get_status():
         if job.get('status') in active_statuses
     )
 
-    # Debug logging to diagnose training jobs count issue
-    # Log when there are any jobs to track
-    if training_jobs:
-        logger.info(
-            f"Status check: {len(training_jobs)} total jobs, "
-            f"{active_training} active. "
-            f"Jobs: {[(jid[:8], j.get('status')) for jid, j in training_jobs.items()]}"
-        )
+    # Debug output - using print as backup since logger may not be showing
+    print(
+        f"STATUS CHECK: dict_id={id(training_jobs)}, "
+        f"len={len(training_jobs)}, active={active_training}",
+        flush=True
+    )
+    logger.info(
+        f"Status endpoint: training_jobs dict id={id(training_jobs)}, "
+        f"len={len(training_jobs)}, active={active_training}"
+    )
 
     return jsonify({
         'status': 'online',
@@ -419,10 +421,15 @@ def train_network(network_id: str):
         'epochs': epochs
     }
 
+    print(
+        f"TRAINING JOB CREATED: dict_id={id(training_jobs)}, "
+        f"job_id={job_id}, len={len(training_jobs)}",
+        flush=True
+    )
     logger.info(
         f"Created training job {job_id} for network {network_id}: "
         f"epochs={epochs}, batch_size={mini_batch_size}, lr={learning_rate}. "
-        f"Active training jobs: {len(training_jobs)}"
+        f"Active training jobs: {len(training_jobs)}, dict id={id(training_jobs)}"
     )
 
     # Run training in background so we can return immediately
