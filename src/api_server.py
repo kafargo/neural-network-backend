@@ -318,17 +318,6 @@ def get_status():
         if job.get('status') in active_statuses
     )
 
-    # Debug output - using print as backup since logger may not be showing
-    print(
-        f"STATUS CHECK: dict_id={id(training_jobs)}, "
-        f"len={len(training_jobs)}, active={active_training}",
-        flush=True
-    )
-    logger.info(
-        f"Status endpoint: training_jobs dict id={id(training_jobs)}, "
-        f"len={len(training_jobs)}, active={active_training}"
-    )
-
     return jsonify({
         'status': 'online',
         'active_networks': len(active_networks),
@@ -421,15 +410,9 @@ def train_network(network_id: str):
         'epochs': epochs
     }
 
-    print(
-        f"TRAINING JOB CREATED: dict_id={id(training_jobs)}, "
-        f"job_id={job_id}, len={len(training_jobs)}",
-        flush=True
-    )
     logger.info(
         f"Created training job {job_id} for network {network_id}: "
-        f"epochs={epochs}, batch_size={mini_batch_size}, lr={learning_rate}. "
-        f"Active training jobs: {len(training_jobs)}, dict id={id(training_jobs)}"
+        f"epochs={epochs}, batch_size={mini_batch_size}, lr={learning_rate}"
     )
 
     # Run training in background so we can return immediately
@@ -465,10 +448,6 @@ def train_network_task(
         training_jobs[job_id]['status'] = 'training'
         training_jobs[job_id]['progress'] = progress
 
-        logger.info(
-            f"Training progress: job {job_id[:8]}, epoch {data['epoch']}/{data['total_epochs']}, "
-            f"accuracy {data['accuracy']:.2%}. Active jobs in dict: {len(training_jobs)}"
-        )
 
         # Send update to connected clients via WebSocket
         socketio.emit('training_update', {
@@ -489,6 +468,11 @@ def train_network_task(
     try:
         logger.info(f"Starting training for job {job_id}")
 
+        # Define yield function for cooperative multitasking
+        # This allows HTTP requests to be processed during training
+        def yield_to_other_tasks():
+            gevent.sleep(0)
+
         # Train the network
         net.SGD(
             training_data,
@@ -496,7 +480,8 @@ def train_network_task(
             mini_batch_size,
             learning_rate,
             test_data=test_data,
-            callback=on_epoch_complete
+            callback=on_epoch_complete,
+            yield_func=yield_to_other_tasks
         )
 
         # Calculate final accuracy

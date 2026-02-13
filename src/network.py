@@ -44,7 +44,7 @@ class Network(object):
         return a
 
     def SGD(self, training_data, epochs, mini_batch_size, eta,
-            test_data=None, callback=None):
+            test_data=None, callback=None, yield_func=None):
         """Train the neural network using mini-batch stochastic
         gradient descent.  The ``training_data`` is a list of tuples
         ``(x, y)`` representing the training inputs and the desired
@@ -54,7 +54,9 @@ class Network(object):
         epoch, and partial progress printed out.  This is useful for
         tracking progress, but slows things down substantially.
         If ``callback`` is provided, it will be called after each epoch with
-        epoch information for real-time updates."""
+        epoch information for real-time updates.
+        If ``yield_func`` is provided, it will be called periodically during
+        training to allow cooperative multitasking (e.g., gevent.sleep(0))."""
         if test_data: n_test = len(test_data)
         n = len(training_data)
         for j in range(epochs):
@@ -63,8 +65,14 @@ class Network(object):
             mini_batches = [
                 training_data[k:k+mini_batch_size]
                 for k in range(0, n, mini_batch_size)]
-            for mini_batch in mini_batches:
+
+            # Process mini-batches with periodic yielding
+            for i, mini_batch in enumerate(mini_batches):
                 self.update_mini_batch(mini_batch, eta)
+                # Yield every 100 mini-batches to allow other tasks to run
+                if yield_func and i % 100 == 0:
+                    yield_func()
+
             time2 = time.time()
             
             # Calculate accuracy and elapsed time
